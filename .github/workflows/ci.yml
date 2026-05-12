@@ -103,7 +103,9 @@ jobs:
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
       run: |
         ${{ github.workspace }}\build\RelWithDebInfo\tilemaker.exe ${{ env.AREA }}.osm.pbf --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output=${{ env.AREA }}.pmtiles --verbose
+        ${{ github.workspace }}\build\RelWithDebInfo\tilemaker.exe ${{ env.AREA }}.osm.pbf --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output=${{ env.AREA }}-repeat.pmtiles --verbose
         ${{ github.workspace }}\build\RelWithDebInfo\tilemaker.exe ${{ env.AREA }}.osm.pbf --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output=${{ env.AREA }}.mbtiles --store "${{ runner.temp }}\osm_store" --verbose
+        ${{ github.workspace }}\build\RelWithDebInfo\tilemaker.exe ${{ env.AREA }}.osm.pbf --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output=${{ env.AREA }}-repeat.mbtiles --store "${{ runner.temp }}\osm_store_repeat" --verbose
 
     - name: Upload generated tiles
       uses: actions/upload-artifact@v7
@@ -113,6 +115,8 @@ jobs:
         path: |
           ${{ env.AREA }}.mbtiles
           ${{ env.AREA }}.pmtiles
+          ${{ env.AREA }}-repeat.mbtiles
+          ${{ env.AREA }}-repeat.pmtiles
 
     - name: 'Upload compiled executable'
       uses: actions/upload-artifact@v7
@@ -175,7 +179,9 @@ jobs:
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
       run: |
         "${{ github.workspace }}/build/${{ matrix.executable }}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.pmtiles" --verbose
+        "${{ github.workspace }}/build/${{ matrix.executable }}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-repeat.pmtiles" --verbose
         "${{ github.workspace }}/build/${{ matrix.executable }}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.mbtiles" --verbose --store "${{ runner.temp }}/store"
+        "${{ github.workspace }}/build/${{ matrix.executable }}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-repeat.mbtiles" --verbose --store "${{ runner.temp }}/store-repeat"
 
     - name: Upload generated tiles
       uses: actions/upload-artifact@v7
@@ -185,6 +191,8 @@ jobs:
         path: |
           ${{ env.AREA }}.mbtiles
           ${{ env.AREA }}.pmtiles
+          ${{ env.AREA }}-repeat.mbtiles
+          ${{ env.AREA }}-repeat.pmtiles
 
     - name: 'Upload compiled executable'
       uses: actions/upload-artifact@v7
@@ -236,7 +244,9 @@ jobs:
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
       run: |
         ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.pmtiles" --verbose
+        ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-repeat.pmtiles" --verbose
         ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.mbtiles" --verbose --store "${{ runner.temp }}/store"
+        ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-repeat.mbtiles" --verbose --store "${{ runner.temp }}/store-repeat"
 
     - name: Upload generated tiles
       uses: actions/upload-artifact@v7
@@ -246,6 +256,8 @@ jobs:
         path: |
           ${{ env.AREA }}.mbtiles
           ${{ env.AREA }}.pmtiles
+          ${{ env.AREA }}-repeat.mbtiles
+          ${{ env.AREA }}-repeat.pmtiles
 
 
   Github-Action:
@@ -270,11 +282,23 @@ jobs:
         input: ${{ env.AREA }}.osm.pbf
         output: ${{ env.AREA }}.pmtiles
 
+    - name: Build repeat openmaptiles-compatible pmtiles file
+      uses: ./
+      with:
+        input: ${{ env.AREA }}.osm.pbf
+        output: ${{ env.AREA }}-repeat.pmtiles
+
     - name: Build openmaptiles-compatible mbtiles file
       uses: ./
       with:
         input: ${{ env.AREA }}.osm.pbf
         output: ${{ env.AREA }}.mbtiles
+
+    - name: Build repeat openmaptiles-compatible mbtiles file
+      uses: ./
+      with:
+        input: ${{ env.AREA }}.osm.pbf
+        output: ${{ env.AREA }}-repeat.mbtiles
 
     - name: Upload generated tiles
       uses: actions/upload-artifact@v7
@@ -284,6 +308,59 @@ jobs:
         path: |
           ${{ env.AREA }}.mbtiles
           ${{ env.AREA }}.pmtiles
+          ${{ env.AREA }}-repeat.mbtiles
+          ${{ env.AREA }}-repeat.pmtiles
+
+  verify-generated-tiles:
+    name: Verify generated tiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - Windows-Build
+      - unix-build
+      - unix-makefile-build
+      - Github-Action
+    env:
+      PMTILES_VERSION: 1.30.2
+
+    steps:
+    - name: Download generated tiles
+      uses: actions/download-artifact@v8
+      with:
+        pattern: tile-outputs-*
+        path: generated-tiles
+
+    - name: Install pmtiles
+      run: |
+        curl -fsSL -o pmtiles.tar.gz "https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_x86_64.tar.gz"
+        tar -xzf pmtiles.tar.gz
+        chmod +x pmtiles
+        sudo mv pmtiles /usr/local/bin/pmtiles
+        pmtiles version
+
+    - name: Verify generated tile archives
+      run: |
+        status=0
+
+        echo "Archive SHA-256"
+        find generated-tiles -type f \( -name '*.mbtiles' -o -name '*.pmtiles' \) -print0 | sort -z | xargs -0 sha256sum
+
+        echo "Verifying PMTiles archives"
+        while IFS= read -r file; do
+          echo "::group::pmtiles verify ${file}"
+          if ! pmtiles verify "${file}"; then
+            echo "::error file=${file}::PMTiles archive failed verification"
+            status=1
+          fi
+          echo "::endgroup::"
+        done < <(find generated-tiles -type f -name '*.pmtiles' | sort)
+
+        if ! python3 .github/scripts/verify-generated-tiles.py generated-tiles
+        then
+          status=1
+        fi
+
+        exit "${status}"
 
   docker-build:
     env:
