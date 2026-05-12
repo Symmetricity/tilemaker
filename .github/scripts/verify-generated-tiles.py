@@ -20,7 +20,8 @@ status = 0
 
 def error(path, message):
     global status
-    print(f"::error title={archive_label(path)}::{message}")
+    label = archive_label(path)
+    print(f"::error title={label}::{label}: {message}")
     status = 1
 
 
@@ -207,7 +208,22 @@ def verify_pmtiles(path):
     if result.stderr:
         print(result.stderr, end="")
     if result.returncode != 0:
-        raise RuntimeError("pmtiles verify failed")
+        raise RuntimeError(pmtiles_failure_message(result))
+
+
+def pmtiles_failure_message(result):
+    lines = [
+        line.strip()
+        for line in (result.stdout + "\n" + result.stderr).splitlines()
+        if line.strip()
+    ]
+    for line in reversed(lines):
+        pos = line.find("Failed to verify archive")
+        if pos >= 0:
+            return line[pos:]
+    if lines:
+        return lines[-1]
+    return "pmtiles verify failed"
 
 
 def pmtiles_header(data):

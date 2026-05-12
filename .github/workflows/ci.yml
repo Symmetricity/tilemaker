@@ -17,10 +17,77 @@ env:
 
 jobs:
 
+  changes:
+    name: Check changed files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runtime: ${{ steps.filter.outputs.runtime }}
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Check for runtime changes
+      id: filter
+      shell: bash
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "${BASE_SHA}" || "${BASE_SHA}" =~ ^0+$ ]] ||
+           ! git cat-file -e "${BASE_SHA}^{commit}" ||
+           ! git cat-file -e "${HEAD_SHA}^{commit}"; then
+          echo "runtime=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Changed file check"
+            echo ""
+            echo "Unable to determine the changed files, so the full CI matrix will run."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        runtime=false
+        changed_count=0
+        while IFS= read -r -d '' path; do
+          changed_count=$((changed_count + 1))
+          case "$path" in
+            .github/workflows/ci.yml)
+              runtime=true
+              ;;
+            CMakeLists.txt|Makefile|Dockerfile|action.yml)
+              runtime=true
+              ;;
+            get-coastline.sh|get-landcover.sh|get-monaco.sh)
+              runtime=true
+              ;;
+            cmake/*|include/*|resources/*|server/*|src/*|test/*)
+              runtime=true
+              ;;
+          esac
+        done < <(git diff --name-only -z "${BASE_SHA}" "${HEAD_SHA}")
+
+        echo "runtime=${runtime}" >> "$GITHUB_OUTPUT"
+        {
+          echo "### Changed file check"
+          echo ""
+          echo "Changed files: ${changed_count}"
+          echo "Runtime-impacting changes: ${runtime}"
+          if [[ "${runtime}" != "true" ]]; then
+            echo ""
+            echo "Only non-runtime files changed, so build and tile-generation jobs were skipped."
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
   download-pbf:
     name: Download PBF fixture
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: changes
+    if: ${{ needs.changes.outputs.runtime == 'true' }}
     outputs:
       pbf-available: ${{ steps.download.outputs.pbf-available }}
 
@@ -356,7 +423,8 @@ jobs:
 
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    if: ${{ github.ref != 'refs/heads/master' }}
+    needs: changes
+    if: ${{ needs.changes.outputs.runtime == 'true' && github.ref != 'refs/heads/master' }}
     permissions:
       contents: read
 
@@ -397,7 +465,8 @@ jobs:
 
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    if: ${{ github.ref == 'refs/heads/master' }}
+    needs: changes
+    if: ${{ needs.changes.outputs.runtime == 'true' && github.ref == 'refs/heads/master' }}
     permissions:
       contents: read
       packages: write
