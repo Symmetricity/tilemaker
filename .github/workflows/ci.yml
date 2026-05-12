@@ -340,27 +340,7 @@ jobs:
 
     - name: Verify generated tile archives
       run: |
-        status=0
-
-        echo "Archive SHA-256"
-        find generated-tiles -type f \( -name '*.mbtiles' -o -name '*.pmtiles' \) -print0 | sort -z | xargs -0 sha256sum
-
-        echo "Verifying PMTiles archives"
-        while IFS= read -r file; do
-          echo "::group::pmtiles verify ${file}"
-          if ! pmtiles verify "${file}"; then
-            echo "::error file=${file}::PMTiles archive failed verification"
-            status=1
-          fi
-          echo "::endgroup::"
-        done < <(find generated-tiles -type f -name '*.pmtiles' | sort)
-
-        if ! python3 .github/scripts/verify-generated-tiles.py generated-tiles
-        then
-          status=1
-        fi
-
-        exit "${status}"
+        python3 .github/scripts/verify-generated-tiles.py generated-tiles
 
   docker-build:
     env:

@@ -6,6 +6,7 @@ import json
 import pathlib
 import sqlite3
 import struct
+import subprocess
 import sys
 import zlib
 
@@ -21,6 +22,17 @@ def error(path, message):
     global status
     print(f"::error file={path}::{message}")
     status = 1
+
+
+def archive_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def decompress_payload(data):
@@ -153,6 +165,21 @@ def canonical_metadata_value(value):
         return str(value)
 
 
+def verify_pmtiles(path):
+    result = subprocess.run(
+        ["pmtiles", "verify", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="")
+    if result.returncode != 0:
+        raise RuntimeError("pmtiles verify failed")
+
+
 def pmtiles_header(data):
     if len(data) < 127:
         raise RuntimeError("PMTiles header is truncated")
@@ -188,6 +215,7 @@ def collect_pmtiles_entries(data, header, offset, length, result):
 
 
 def pmtiles_fingerprint(path):
+    verify_pmtiles(path)
     data = path.read_bytes()
     header = pmtiles_header(data)
     metadata = decompress_pmtiles(
@@ -216,6 +244,35 @@ def pmtiles_fingerprint(path):
     return fingerprint
 
 
+def fingerprint_archives(paths, fingerprint, failure_message):
+    cache = {}
+    fingerprints = {}
+    archive_hashes = {}
+
+    for path in paths:
+        archive_hashes[path] = archive_sha256(path)
+        print(f"{archive_hashes[path]}  {path}")
+
+    for path in paths:
+        archive_hash = archive_hashes[path]
+        if archive_hash not in cache:
+            try:
+                cache[archive_hash] = (path, fingerprint(path), None)
+            except Exception as err:
+                cache[archive_hash] = (path, None, str(err))
+
+        source_path, content_hash, failure = cache[archive_hash]
+        if failure is not None:
+            error(path, f"{failure_message}: {failure}")
+            continue
+
+        fingerprints[path] = content_hash
+        if source_path != path:
+            print(f"{path}: same archive as {source_path}; content {content_hash}")
+
+    return fingerprints
+
+
 def check_repeat(fingerprints, suffix):
     for path, fingerprint in sorted(fingerprints.items()):
         if path.name.endswith(f"-repeat.{suffix}"):
@@ -242,20 +299,21 @@ def check_cross_runner(fingerprints, suffix):
 
 def main():
     root = pathlib.Path(sys.argv[1])
+    mbtiles_paths = sorted(root.glob("**/*.mbtiles"))
+    pmtiles_paths = sorted(root.glob("**/*.pmtiles"))
 
-    mbtiles = {}
-    for path in sorted(root.glob("**/*.mbtiles")):
-        try:
-            mbtiles[path] = mbtiles_fingerprint(path)
-        except Exception as err:
-            error(path, f"MBTiles archive failed verification: {err}")
+    print("Archive SHA-256")
+    mbtiles = fingerprint_archives(
+        mbtiles_paths,
+        mbtiles_fingerprint,
+        "MBTiles archive failed verification",
+    )
 
-    pmtiles = {}
-    for path in sorted(root.glob("**/*.pmtiles")):
-        try:
-            pmtiles[path] = pmtiles_fingerprint(path)
-        except Exception as err:
-            error(path, f"PMTiles content could not be fingerprinted: {err}")
+    pmtiles = fingerprint_archives(
+        pmtiles_paths,
+        pmtiles_fingerprint,
+        "PMTiles archive failed verification",
+    )
 
     check_repeat(mbtiles, "mbtiles")
     check_repeat(pmtiles, "pmtiles")
