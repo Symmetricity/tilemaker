@@ -74,12 +74,21 @@ jobs:
       with:
         name: pbf-fixture
 
+    - name: Detect runner image
+      id: runner-image
+      shell: pwsh
+      run: |
+        $imageOS = if ($env:ImageOS) { $env:ImageOS } else { "unknown" }
+        $imageVersion = if ($env:ImageVersion) { $env:ImageVersion } else { "unknown" }
+        "image-os=$imageOS" >> $env:GITHUB_OUTPUT
+        "image-version=$imageVersion" >> $env:GITHUB_OUTPUT
+
     - name: Enable vcpkg binary cache
       uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}\vcpkg-binary-cache
-        key: vcpkg-binary-${{ runner.os }}-x64-windows-static-md-${{ hashFiles('.github/workflows/ci.yml') }}
-        restore-keys: vcpkg-binary-${{ runner.os }}-x64-windows-static-md-
+        key: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-x64-windows-static-md-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-x64-windows-static-md-
 
     - name: Build dependencies
       run: |
@@ -138,12 +147,18 @@ jobs:
       with:
         name: pbf-fixture
 
+    - name: Detect runner image
+      id: runner-image
+      run: |
+        echo "image-os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+        echo "image-version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
     - name: Enable vcpkg binary cache
       uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}/vcpkg-binary-cache
-        key: vcpkg-binary-${{ runner.os }}-${{ matrix.triplet }}-${{ hashFiles('.github/workflows/ci.yml') }}
-        restore-keys: vcpkg-binary-${{ runner.os }}-${{ matrix.triplet }}-
+        key: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-${{ matrix.triplet }}-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-${{ matrix.triplet }}-
 
     - name: Build dependencies
       run: |
