@@ -20,7 +20,7 @@ status = 0
 
 def error(path, message):
     global status
-    print(f"::error file={path}::{message}")
+    print(f"::error title={archive_label(path)}::{message}")
     status = 1
 
 
@@ -33,6 +33,35 @@ def archive_sha256(path):
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def build_label(path):
+    artifact = path.parent.name
+    if artifact == "tile-outputs-github-action":
+        return "GitHub Action"
+    if not artifact.startswith("tile-outputs-"):
+        return str(path.parent)
+
+    label = artifact.removeprefix("tile-outputs-")
+    if label.endswith("-cmake"):
+        return f"{runner_label(label.removesuffix('-cmake'))} (CMake)"
+    if label.endswith("-makefile"):
+        return f"{runner_label(label.removesuffix('-makefile'))} (Makefile)"
+    return artifact
+
+
+def runner_label(label):
+    if label == "windows":
+        return "Windows"
+    if label.startswith("ubuntu-"):
+        return "Ubuntu " + label.removeprefix("ubuntu-")
+    if label.startswith("macos-"):
+        return "macOS " + label.removeprefix("macos-")
+    return label.replace("-", " ")
+
+
+def archive_label(path):
+    return f"{build_label(path)} {path.name}"
 
 
 def decompress_payload(data):
@@ -152,7 +181,7 @@ def mbtiles_fingerprint(path):
     con.close()
 
     fingerprint = digest.hexdigest()
-    print(f"{path}: {tile_count} tiles, zoom {minzoom}-{maxzoom}, {len(metadata_rows)} metadata rows, content {fingerprint}")
+    print(f"{archive_label(path)}: {tile_count} tiles, zoom {minzoom}-{maxzoom}, {len(metadata_rows)} metadata rows, content {fingerprint}")
     return fingerprint
 
 
@@ -166,6 +195,7 @@ def canonical_metadata_value(value):
 
 
 def verify_pmtiles(path):
+    print(f"{archive_label(path)}: verifying PMTiles archive")
     result = subprocess.run(
         ["pmtiles", "verify", str(path)],
         capture_output=True,
@@ -240,7 +270,7 @@ def pmtiles_fingerprint(path):
         digest.update(b"\n")
 
     fingerprint = digest.hexdigest()
-    print(f"{path}: {len(entries)} addressed tiles, content {fingerprint}")
+    print(f"{archive_label(path)}: {len(entries)} addressed tiles, content {fingerprint}")
     return fingerprint
 
 
@@ -251,7 +281,7 @@ def fingerprint_archives(paths, fingerprint, failure_message):
 
     for path in paths:
         archive_hashes[path] = archive_sha256(path)
-        print(f"{archive_hashes[path]}  {path}")
+        print(f"{archive_hashes[path]}  {archive_label(path)}")
 
     for path in paths:
         archive_hash = archive_hashes[path]
@@ -268,7 +298,7 @@ def fingerprint_archives(paths, fingerprint, failure_message):
 
         fingerprints[path] = content_hash
         if source_path != path:
-            print(f"{path}: same archive as {source_path}; content {content_hash}")
+            print(f"{archive_label(path)}: same archive as {archive_label(source_path)}; content {content_hash}")
 
     return fingerprints
 
@@ -279,9 +309,9 @@ def check_repeat(fingerprints, suffix):
             continue
         repeat = path.with_name(f"{path.stem}-repeat.{suffix}")
         if repeat not in fingerprints:
-            error(path, f"missing repeat output {repeat}")
+            error(path, f"missing repeat output {archive_label(repeat)}")
         elif fingerprints[repeat] != fingerprint:
-            error(path, f"content differs from repeat output {repeat}")
+            error(path, f"content differs from repeat output {archive_label(repeat)}")
 
 
 def check_cross_runner(fingerprints, suffix):
@@ -294,7 +324,7 @@ def check_cross_runner(fingerprints, suffix):
         reference_path, reference = values[0]
         for path, fingerprint in values[1:]:
             if fingerprint != reference:
-                error(path, f"{name} content differs from {reference_path}")
+                error(path, f"content differs from {archive_label(reference_path)}")
 
 
 def main():
