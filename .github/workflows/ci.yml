@@ -5,24 +5,56 @@ on:
     branches: [ master ]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
   AREA: liechtenstein
 
 jobs:
 
+  download-pbf:
+    name: Download PBF fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - name: Download PBF file
+      run: curl -L "https://download.geofabrik.de/europe/${AREA}-latest.osm.pbf" -o "${AREA}.osm.pbf"
+
+    - name: Upload PBF fixture
+      uses: actions/upload-artifact@v4
+      with:
+        name: pbf-fixture
+        retention-days: 1
+        path: ${{ env.AREA }}.osm.pbf
+
   Windows-Build:
     name: Windows (CMake)
     runs-on: windows-latest
+    timeout-minutes: 120
+    needs: download-pbf
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-binary-cache,readwrite
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Enable vcpkg cache
+    - name: Download PBF fixture
+      uses: actions/download-artifact@v4
+      with:
+        name: pbf-fixture
+
+    - name: Enable vcpkg binary cache
       uses: actions/cache@v4
       with:
-        path: c:\vcpkg\installed
-        key: windows-vcpkg-x64-0 # Increase the number whenever dependencies are modified
-        restore-keys: windows-vcpkg-x64
+        path: ${{ github.workspace }}\vcpkg-binary-cache
+        key: vcpkg-binary-${{ runner.os }}-x64-windows-static-md-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: vcpkg-binary-${{ runner.os }}-x64-windows-static-md-
 
     - name: Build dependencies
       run: |
@@ -36,7 +68,6 @@ jobs:
 
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
       run: |
-        Invoke-WebRequest -Uri https://download.geofabrik.de/europe/${{ env.AREA }}-latest.osm.pbf -OutFile ${{ env.AREA }}.osm.pbf -MaximumRedirection 5
         ${{ github.workspace }}\build\RelWithDebInfo\tilemaker.exe ${{ env.AREA }}.osm.pbf --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output=${{ env.AREA }}.pmtiles --verbose
         ${{ github.workspace }}\build\RelWithDebInfo\tilemaker.exe ${{ env.AREA }}.osm.pbf --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output=${{ env.AREA }}.mbtiles --store osm_store --verbose
 
@@ -44,6 +75,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: tilemaker-windows
+        retention-days: 14
         path: |
           ${{ github.workspace }}\resources
           ${{ github.workspace }}\build\RelWithDebInfo\tilemaker.exe
@@ -56,43 +88,51 @@ jobs:
           - os: ubuntu-22.04
             triplet: x64-linux
             executable: tilemaker
-            path: /usr/local/share/vcpkg/installed
             toolchain: /usr/local/share/vcpkg/scripts/buildsystems/vcpkg.cmake
     name: ${{ matrix.os }} (CMake)
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    needs: download-pbf
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-binary-cache,readwrite
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Enable vcpkg cache
+    - name: Download PBF fixture
+      uses: actions/download-artifact@v4
+      with:
+        name: pbf-fixture
+
+    - name: Enable vcpkg binary cache
       uses: actions/cache@v4
       with:
-        path: ${{ matrix.path }}
-        key: vcpkg-${{ matrix.triplet }}-0 # Increase the number whenever dependencies are modified
-        restore-keys: vcpkg-${{ matrix.triplet }}
+        path: ${{ github.workspace }}/vcpkg-binary-cache
+        key: vcpkg-binary-${{ runner.os }}-${{ matrix.triplet }}-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: vcpkg-binary-${{ runner.os }}-${{ matrix.triplet }}-
 
     - name: Build dependencies
       run: |
-        vcpkg install --triplet=${{ matrix.triplet }} lua shapelib zlib protobuf[zlib] sqlite3 boost-program-options boost-filesystem boost-geometry boost-system boost-asio boost-interprocess boost-iostreams boost-sort rapidjson
+        vcpkg install --triplet="${{ matrix.triplet }}" lua shapelib zlib protobuf[zlib] sqlite3 boost-program-options boost-filesystem boost-geometry boost-system boost-asio boost-interprocess boost-iostreams boost-sort rapidjson
 
     - name: Build tilemaker
       run: |
         mkdir build
         cd build
-        cmake -DTILEMAKER_BUILD_STATIC=ON -DCMAKE_BUILD_TYPE=Release -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} -DCMAKE_TOOLCHAIN_FILE=${{ matrix.toolchain }} -DCMAKE_CXX_COMPILER=g++ ..
+        cmake -DTILEMAKER_BUILD_STATIC=ON -DCMAKE_BUILD_TYPE=Release -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" -DCMAKE_TOOLCHAIN_FILE="${{ matrix.toolchain }}" -DCMAKE_CXX_COMPILER=g++ ..
         cmake --build . 
         strip tilemaker
 
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
       run: |
-        curl -L https://download.geofabrik.de/europe/${{ env.AREA }}-latest.osm.pbf -o ${{ env.AREA }}.osm.pbf
-        ${{ github.workspace }}/build/${{ matrix.executable }} ${{ env.AREA }}.osm.pbf --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output=${{ env.AREA }}.pmtiles --verbose
-        ${{ github.workspace }}/build/${{ matrix.executable }} ${{ env.AREA }}.osm.pbf --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output=${{ env.AREA }}.mbtiles --verbose --store /tmp/store
+        "${{ github.workspace }}/build/${{ matrix.executable }}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.pmtiles" --verbose
+        "${{ github.workspace }}/build/${{ matrix.executable }}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.mbtiles" --verbose --store /tmp/store
 
     - name: 'Upload compiled executable'
       uses: actions/upload-artifact@v4
       with:
         name: tilemaker-${{ matrix.os }}
+        retention-days: 14
         path: |
           ${{ github.workspace }}/resources
           ${{ github.workspace }}/build/${{ matrix.executable }}
@@ -107,9 +147,16 @@ jobs:
 
     name: ${{ matrix.os }} (Makefile)
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    needs: download-pbf
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Download PBF fixture
+      uses: actions/download-artifact@v4
+      with:
+        name: pbf-fixture
 
     - name: Install Linux dependencies
       if: ${{ matrix.os == 'ubuntu-22.04' }}
@@ -129,21 +176,24 @@ jobs:
 
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
       run: |
-        curl -L https://download.geofabrik.de/europe/${{ env.AREA }}-latest.osm.pbf -o ${{ env.AREA }}.osm.pbf
-        ./tilemaker ${{ env.AREA }}.osm.pbf --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output=${{ env.AREA }}.pmtiles --verbose
-        ./tilemaker ${{ env.AREA }}.osm.pbf --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output=${{ env.AREA }}.mbtiles --verbose --store /tmp/store
+        ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.pmtiles" --verbose
+        ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.mbtiles" --verbose --store /tmp/store
 
 
   Github-Action:
     name: Generate mbtiles with Github Action
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: download-pbf
 
     steps:
     - name: Check out repository
       uses: actions/checkout@v4
 
     - name: Download PBF file
-      run: curl -L https://download.geofabrik.de/europe/${AREA}-latest.osm.pbf -o ${AREA}.osm.pbf
+      uses: actions/download-artifact@v4
+      with:
+        name: pbf-fixture
 
     - name: Build openmaptiles-compatible mbtiles files of given area
       uses: ./
@@ -157,6 +207,7 @@ jobs:
       IMAGE_NAME: ${{ github.repository }}
 
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -164,6 +215,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -186,6 +240,8 @@ jobs:
           push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         if: ${{ github.ref == 'refs/heads/master'}}
@@ -194,3 +250,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
