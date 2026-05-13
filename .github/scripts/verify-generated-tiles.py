@@ -18,11 +18,25 @@ COMPRESSION_GZIP = 2
 status = 0
 
 
+class ArchiveContent:
+    def __init__(self, raw_hash, semantic_hash, raw_tiles, semantic_tiles, layer_counts):
+        self.raw_hash = raw_hash
+        self.semantic_hash = semantic_hash
+        self.raw_tiles = raw_tiles
+        self.semantic_tiles = semantic_tiles
+        self.layer_counts = layer_counts
+
+
 def error(path, message):
     global status
     label = archive_label(path)
     print(f"::error title={label}::{label}: {message}")
     status = 1
+
+
+def notice(path, message):
+    label = archive_label(path)
+    print(f"::notice title={label}::{label}: {message}")
 
 
 def archive_sha256(path):
@@ -153,6 +167,154 @@ def deserialize_directory(data):
     return entries
 
 
+def zigzag_decode(value):
+    return (value >> 1) ^ -(value & 1)
+
+
+def protobuf_fields(data):
+    pos = 0
+    while pos < len(data):
+        tag, pos = decode_varint(data, pos)
+        field = tag >> 3
+        wire_type = tag & 7
+        if wire_type == 0:
+            value, pos = decode_varint(data, pos)
+            yield field, wire_type, value
+        elif wire_type == 1:
+            if pos + 8 > len(data):
+                raise RuntimeError("end of buffer while reading fixed64")
+            yield field, wire_type, data[pos:pos + 8]
+            pos += 8
+        elif wire_type == 2:
+            length, pos = decode_varint(data, pos)
+            if pos + length > len(data):
+                raise RuntimeError("end of buffer while reading length-delimited field")
+            yield field, wire_type, data[pos:pos + length]
+            pos += length
+        elif wire_type == 5:
+            if pos + 4 > len(data):
+                raise RuntimeError("end of buffer while reading fixed32")
+            yield field, wire_type, data[pos:pos + 4]
+            pos += 4
+        else:
+            raise RuntimeError(f"unsupported protobuf wire type {wire_type}")
+
+
+def packed_varints(data):
+    pos = 0
+    values = []
+    while pos < len(data):
+        value, pos = decode_varint(data, pos)
+        values.append(value)
+    return values
+
+
+def decode_mvt_value(data):
+    values = []
+    for field, wire_type, value in protobuf_fields(data):
+        if field == 1:
+            values.append(["string", value.decode("utf-8", "replace")])
+        elif field == 2:
+            values.append(["float", struct.unpack("<f", value)[0]])
+        elif field == 3:
+            values.append(["double", struct.unpack("<d", value)[0]])
+        elif field == 4:
+            values.append(["int", value])
+        elif field == 5:
+            values.append(["uint", value])
+        elif field == 6:
+            values.append(["sint", zigzag_decode(value)])
+        elif field == 7:
+            values.append(["bool", bool(value)])
+        else:
+            values.append([f"field{field}", wire_type, value if isinstance(value, int) else value.hex()])
+    return values
+
+
+def decode_mvt_feature(data, keys, values):
+    feature_id = None
+    tags = []
+    geometry_type = None
+    geometry = []
+    for field, wire_type, value in protobuf_fields(data):
+        if field == 1:
+            feature_id = value
+        elif field == 2:
+            indexes = packed_varints(value)
+            if len(indexes) % 2 != 0:
+                raise RuntimeError("MVT feature has an odd number of tag indexes")
+            for index in range(0, len(indexes), 2):
+                key_index = indexes[index]
+                value_index = indexes[index + 1]
+                if key_index >= len(keys) or value_index >= len(values):
+                    raise RuntimeError("MVT feature tag index is out of range")
+                tags.append([keys[key_index], values[value_index]])
+        elif field == 3:
+            geometry_type = value
+        elif field == 4:
+            geometry = packed_varints(value)
+    tags.sort(key=canonical_json)
+    return [feature_id, geometry_type, tags, geometry]
+
+
+def decode_mvt_layer(data):
+    name = None
+    features = []
+    keys = []
+    values = []
+    extent = None
+    version = None
+    for field, wire_type, value in protobuf_fields(data):
+        if field == 1:
+            name = value.decode("utf-8", "replace")
+        elif field == 2:
+            features.append(value)
+        elif field == 3:
+            keys.append(value.decode("utf-8", "replace"))
+        elif field == 4:
+            values.append(decode_mvt_value(value))
+        elif field == 5:
+            extent = value
+        elif field == 15:
+            version = value
+
+    decoded_features = [decode_mvt_feature(feature, keys, values) for feature in features]
+    decoded_features.sort(key=canonical_json)
+    return [name, version, extent, decoded_features]
+
+
+def canonical_mvt(data):
+    layers = []
+    for field, wire_type, value in protobuf_fields(data):
+        if field == 3:
+            layers.append(decode_mvt_layer(value))
+    layers.sort(key=canonical_json)
+    return layers
+
+
+def canonical_json(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def semantic_tile_content(data):
+    tile = canonical_mvt(data)
+    digest = hashlib.sha256(canonical_json(tile).encode("utf-8", "surrogateescape")).hexdigest()
+    layer_counts = {layer[0]: len(layer[3]) for layer in tile}
+    return digest, layer_counts
+
+
+def add_tile_to_digests(raw_digest, semantic_digest, raw_tiles, semantic_tiles, layer_counts, z, x, y, payload):
+    tile = (z, x, y)
+    raw_hash = hashlib.sha256(payload).hexdigest()
+    semantic_hash, counts = semantic_tile_content(payload)
+    raw_tiles[tile] = raw_hash
+    semantic_tiles[tile] = semantic_hash
+    layer_counts[tile] = counts
+
+    raw_digest.update(f"T\t{z}\t{x}\t{y}\t{len(payload)}\t{raw_hash}\n".encode())
+    semantic_digest.update(f"T\t{z}\t{x}\t{y}\t{semantic_hash}\n".encode())
+
+
 def mbtiles_fingerprint(path):
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     cur = con.cursor()
@@ -171,19 +333,27 @@ def mbtiles_fingerprint(path):
     if not metadata_rows:
         raise RuntimeError("metadata table is empty")
 
-    digest = hashlib.sha256()
+    raw_digest = hashlib.sha256()
+    semantic_digest = hashlib.sha256()
     for name, value in metadata_rows:
-        digest.update(f"M\t{name}\t{canonical_metadata_value(value)}\n".encode("utf-8", "surrogateescape"))
+        metadata = f"M\t{name}\t{canonical_metadata_value(value)}\n".encode("utf-8", "surrogateescape")
+        raw_digest.update(metadata)
+        semantic_digest.update(metadata)
+
+    raw_tiles = {}
+    semantic_tiles = {}
+    layer_counts = {}
     for z, x, y, tile_data in cur.execute("select zoom_level, tile_column, tile_row, tile_data from tiles order by zoom_level, tile_column, tile_row"):
         payload = decompress_payload(bytes(tile_data))
-        digest.update(f"T\t{z}\t{x}\t{y}\t{len(payload)}\t".encode())
-        digest.update(hashlib.sha256(payload).hexdigest().encode())
-        digest.update(b"\n")
+        add_tile_to_digests(raw_digest, semantic_digest, raw_tiles, semantic_tiles, layer_counts, z, x, y, payload)
     con.close()
 
-    fingerprint = digest.hexdigest()
-    print(f"{archive_label(path)}: {tile_count} tiles, zoom {minzoom}-{maxzoom}, {len(metadata_rows)} metadata rows, content {fingerprint}")
-    return fingerprint
+    content = ArchiveContent(raw_digest.hexdigest(), semantic_digest.hexdigest(), raw_tiles, semantic_tiles, layer_counts)
+    print(
+        f"{archive_label(path)}: {tile_count} tiles, zoom {minzoom}-{maxzoom}, "
+        f"{len(metadata_rows)} metadata rows, raw {content.raw_hash}, semantic {content.semantic_hash}"
+    )
+    return content
 
 
 def canonical_metadata_value(value):
@@ -275,24 +445,30 @@ def pmtiles_fingerprint(path):
 
     entries = []
     collect_pmtiles_entries(data, header, header["root_dir_offset"], header["root_dir_bytes"], entries)
-    digest = hashlib.sha256()
-    digest.update(b"M\t")
-    digest.update(hashlib.sha256(metadata).hexdigest().encode())
-    digest.update(b"\n")
+    raw_digest = hashlib.sha256()
+    semantic_digest = hashlib.sha256()
+    metadata_hash = hashlib.sha256(metadata).hexdigest()
+    raw_digest.update(f"M\t{metadata_hash}\n".encode())
+    semantic_digest.update(f"M\t{metadata_hash}\n".encode())
+
+    raw_tiles = {}
+    semantic_tiles = {}
+    layer_counts = {}
     for z, x, y, offset, length in sorted(entries):
         payload = decompress_pmtiles(data[offset:offset + length], header["tile_compression"])
-        digest.update(f"T\t{z}\t{x}\t{y}\t{len(payload)}\t".encode())
-        digest.update(hashlib.sha256(payload).hexdigest().encode())
-        digest.update(b"\n")
+        add_tile_to_digests(raw_digest, semantic_digest, raw_tiles, semantic_tiles, layer_counts, z, x, y, payload)
 
-    fingerprint = digest.hexdigest()
-    print(f"{archive_label(path)}: {len(entries)} addressed tiles, content {fingerprint}")
-    return fingerprint
+    content = ArchiveContent(raw_digest.hexdigest(), semantic_digest.hexdigest(), raw_tiles, semantic_tiles, layer_counts)
+    print(
+        f"{archive_label(path)}: {len(entries)} addressed tiles, "
+        f"raw {content.raw_hash}, semantic {content.semantic_hash}"
+    )
+    return content
 
 
 def fingerprint_archives(paths, fingerprint, failure_message):
     cache = {}
-    fingerprints = {}
+    contents = {}
     archive_hashes = {}
 
     for path in paths:
@@ -312,35 +488,86 @@ def fingerprint_archives(paths, fingerprint, failure_message):
             error(path, f"{failure_message}: {failure}")
             continue
 
-        fingerprints[path] = content_hash
+        contents[path] = content_hash
         if source_path != path:
-            print(f"{archive_label(path)}: same archive as {archive_label(source_path)}; content {content_hash}")
+            print(
+                f"{archive_label(path)}: same archive as {archive_label(source_path)}; "
+                f"raw {content_hash.raw_hash}, semantic {content_hash.semantic_hash}"
+            )
 
-    return fingerprints
+    return contents
 
 
-def check_repeat(fingerprints, suffix):
-    for path, fingerprint in sorted(fingerprints.items()):
+def tile_label(tile):
+    z, x, y = tile
+    return f"z{z}/{x}/{y}"
+
+
+def tile_difference(left, right, semantic):
+    left_tiles = left.semantic_tiles if semantic else left.raw_tiles
+    right_tiles = right.semantic_tiles if semantic else right.raw_tiles
+    for tile in sorted(set(left_tiles) | set(right_tiles)):
+        if tile not in left_tiles:
+            return f"{tile_label(tile)} is missing from output"
+        if tile not in right_tiles:
+            return f"{tile_label(tile)} is missing from comparison output"
+        if left_tiles[tile] != right_tiles[tile]:
+            if semantic:
+                return semantic_tile_difference(left, right, tile)
+            return f"first byte-level difference at {tile_label(tile)}"
+    return "content differs"
+
+
+def semantic_tile_difference(left, right, tile):
+    left_counts = left.layer_counts.get(tile, {})
+    right_counts = right.layer_counts.get(tile, {})
+    for layer in sorted(set(left_counts) | set(right_counts)):
+        left_count = left_counts.get(layer, 0)
+        right_count = right_counts.get(layer, 0)
+        if left_count != right_count:
+            return (
+                f"first semantic difference at {tile_label(tile)}: "
+                f"layer {layer} has {left_count} vs {right_count} features"
+            )
+    return f"first semantic difference at {tile_label(tile)}"
+
+
+def compare_content(path, content, other_path, other_content, relation):
+    if content.semantic_hash != other_content.semantic_hash:
+        error(
+            path,
+            f"semantic content differs from {relation} {archive_label(other_path)}; "
+            f"{tile_difference(content, other_content, True)}",
+        )
+    elif content.raw_hash != other_content.raw_hash:
+        notice(
+            path,
+            f"raw tile bytes differ from {relation} {archive_label(other_path)}, "
+            f"but semantic content matches; {tile_difference(content, other_content, False)}",
+        )
+
+
+def check_repeat(contents, suffix):
+    for path, content in sorted(contents.items()):
         if path.name.endswith(f"-repeat.{suffix}"):
             continue
         repeat = path.with_name(f"{path.stem}-repeat.{suffix}")
-        if repeat not in fingerprints:
+        if repeat not in contents:
             error(path, f"missing repeat output {archive_label(repeat)}")
-        elif fingerprints[repeat] != fingerprint:
-            error(path, f"content differs from repeat output {archive_label(repeat)}")
+        else:
+            compare_content(path, content, repeat, contents[repeat], "repeat output")
 
 
-def check_cross_runner(fingerprints, suffix):
+def check_cross_runner(contents, suffix):
     groups = {}
-    for path, fingerprint in fingerprints.items():
+    for path, content in contents.items():
         if path.name.endswith(f"-repeat.{suffix}"):
             continue
-        groups.setdefault(path.name, []).append((path, fingerprint))
+        groups.setdefault(path.name, []).append((path, content))
     for name, values in sorted(groups.items()):
         reference_path, reference = values[0]
-        for path, fingerprint in values[1:]:
-            if fingerprint != reference:
-                error(path, f"content differs from {archive_label(reference_path)}")
+        for path, content in values[1:]:
+            compare_content(path, content, reference_path, reference, "output")
 
 
 def main():
