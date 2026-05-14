@@ -50,6 +50,12 @@ struct visItem {
 struct minHeap {
 	std::vector<visItem *> h;
 
+	bool Less(visItem *a, visItem *b) {
+		if (a->area < b->area) return true;
+		if (a->area > b->area) return false;
+		return a->pointIndex < b->pointIndex;
+	}
+
 	void Push(visItem *item) {
 		item->index = h.size();
 		h.push_back(item);
@@ -88,7 +94,7 @@ struct minHeap {
 			int up = ((i + 1) >> 1) - 1;
 			visItem *parent = h[up];
 
-			if (parent->area <= object->area) {
+			if (!Less(object, parent)) {
 				// parent is smaller so we're done fixing up the heap.
 				break;
 			}
@@ -114,12 +120,12 @@ struct minHeap {
 			visItem *child = h[down];
 
 			// swap with smallest child
-			if (left < h.size() && h[left]->area < child->area) {
+			if (left < h.size() && Less(h[left], child)) {
 				down = left;
 				child = h[down];
 			}
 
-			if (right < h.size() && h[right]->area < child->area) {
+			if (right < h.size() && Less(h[right], child)) {
 				down = right;
 				child = h[down];
 			}
