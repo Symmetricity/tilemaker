@@ -251,9 +251,6 @@ Polygon simplifyVis(const Polygon &p, double max_distance) {
 	Polygon output;
 	double threshold = max_distance * max_distance * 4;
 	output.outer() = visvalingam(p.outer(), threshold, 4);
-	if(output.outer().size() <= 3 || geom::perimeter(output.outer()) <= 3 * max_distance) {
-		return Polygon();
-	}
 	for (const auto &ring : p.inners()) {
 		Ring inner = visvalingam(ring, threshold, 4);
 		if(inner.size() > 3 && geom::perimeter(inner) > 3 * max_distance) {
@@ -265,10 +262,7 @@ Polygon simplifyVis(const Polygon &p, double max_distance) {
 MultiPolygon simplifyVis(const MultiPolygon &mp, double max_distance) { 
 	MultiPolygon output;
 	for (const auto &p : mp) {
-		Polygon new_p = simplifyVis(p, max_distance);
-		if(!new_p.outer().empty()) {
-			output.emplace_back(std::move(new_p));
-		}
+		output.emplace_back(simplifyVis(p, max_distance));
 	}
 	make_valid(output);
 	return output;
