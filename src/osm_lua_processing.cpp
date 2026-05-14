@@ -723,7 +723,8 @@ void OsmLuaProcessing::Layer(const string &layerName, bool area) {
 // Emit a point. This function can be called for nodes, ways or relations.
 //
 // When called for a 2D geometry, you can pass a preferred centroid algorithm
-// in `centroid-algorithm`. Currently `polylabel` and `centroid` are supported.
+// in `centroid-algorithm`. Currently `polylabel`, `centroid`, and
+// `centroid_if_convex` are supported.
 //
 // When called for a relation, you can pass a list of roles. The point of a node
 // with that role will be used if available.
@@ -857,6 +858,25 @@ Point OsmLuaProcessing::calculateCentroid(CentroidAlgorithm algorithm) {
 			if (tmp.size() == 0)
 				throw geom::centroid_exception();
 			centroid = mapbox::polylabel(tmp[index]);
+		} else if (algorithm == CentroidAlgorithm::CentroidIfConvex) {
+			int index = 0;
+			double biggestSize = 0;
+			for (int i = 0; i < tmp.size(); i++) {
+				double size = geom::area(tmp[i]);
+				if (size > biggestSize) {
+					biggestSize = size;
+					index = i;
+				}
+			}
+
+			if (tmp.size() == 0)
+				throw geom::centroid_exception();
+			Polygon hull;
+			geom::convex_hull(tmp[index], hull);
+			if (geom::num_points(hull) == geom::num_points(tmp[index]))
+				geom::centroid(tmp[index], centroid);
+			else
+				geom::point_on_surface(tmp[index], centroid);
 		} else {
 			geom::centroid(tmp, centroid);
 		}
@@ -878,6 +898,13 @@ Point OsmLuaProcessing::calculateCentroid(CentroidAlgorithm algorithm) {
 			if (algorithm == CentroidAlgorithm::Polylabel) {
 				// CONSIDER: pick precision intelligently
 				centroid = mapbox::polylabel(p);
+			} else if (algorithm == CentroidAlgorithm::CentroidIfConvex) {
+				Polygon hull;
+				geom::convex_hull(p, hull);
+				if (geom::num_points(hull) == geom::num_points(p))
+					geom::centroid(p, centroid);
+				else
+					geom::point_on_surface(p, centroid);
 			} else {
 				geom::centroid(p, centroid);
 			}
@@ -891,6 +918,7 @@ Point OsmLuaProcessing::calculateCentroid(CentroidAlgorithm algorithm) {
 OsmLuaProcessing::CentroidAlgorithm OsmLuaProcessing::parseCentroidAlgorithm(const std::string& algorithm) const {
 	if (algorithm == "polylabel") return OsmLuaProcessing::CentroidAlgorithm::Polylabel;
 	if (algorithm == "centroid") return OsmLuaProcessing::CentroidAlgorithm::Centroid;
+	if (algorithm == "centroid_if_convex") return OsmLuaProcessing::CentroidAlgorithm::CentroidIfConvex;
 
 	throw std::runtime_error("unknown centroid algorithm " + algorithm);
 }
