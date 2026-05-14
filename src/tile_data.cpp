@@ -326,8 +326,7 @@ Geometry TileDataSource::buildWayGeometry(OutputGeometryType const geomType,
 			}
 
 			MultiPolygon mp;
-			geom::assign(mp, input);
-			fast_clip(mp, box);
+			geom::intersection(input, box, mp);
 			geom::correct(mp);
 			geom::validity_failure_type failure = geom::validity_failure_type::no_failure;
 			if (!geom::is_valid(mp,failure)) { 
