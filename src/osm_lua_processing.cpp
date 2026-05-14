@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 
 #include "osm_lua_processing.h"
@@ -20,6 +21,116 @@ thread_local OsmLuaProcessing* osmLuaProcessing = nullptr;
 std::mutex vectorLayerMetadataMutex;
 std::unordered_map<std::string, std::string> OsmLuaProcessing::dataStore;
 std::mutex OsmLuaProcessing::dataStoreMutex;
+
+struct ScanlineInterval {
+	double min;
+	double max;
+};
+
+static void addScanlineIntersections(const Ring &ring, double y, vector<double> &intersections) {
+	if (ring.size()<2) return;
+
+	for (size_t i = 0; i+1 < ring.size(); i++) {
+		const Point &a = ring[i];
+		const Point &b = ring[i+1];
+		double ay = a.y();
+		double by = b.y();
+
+		if (ay == by) continue;
+		if ((ay <= y && y < by) || (by <= y && y < ay)) {
+			double x = a.x() + (y-ay) * (b.x()-a.x()) / (by-ay);
+			intersections.push_back(x);
+		}
+	}
+}
+
+static vector<ScanlineInterval> scanlineIntervals(const Ring &ring, double y) {
+	vector<double> intersections;
+	addScanlineIntersections(ring, y, intersections);
+	sort(intersections.begin(), intersections.end());
+
+	vector<ScanlineInterval> intervals;
+	for (size_t i = 0; i+1 < intersections.size(); i += 2) {
+		if (intersections[i] < intersections[i+1])
+			intervals.push_back({ intersections[i], intersections[i+1] });
+	}
+	return intervals;
+}
+
+static void subtractScanlineInterval(vector<ScanlineInterval> &intervals, const ScanlineInterval &hole) {
+	vector<ScanlineInterval> result;
+
+	for (const auto &interval : intervals) {
+		if (hole.max <= interval.min || hole.min >= interval.max) {
+			result.push_back(interval);
+			continue;
+		}
+
+		if (hole.min > interval.min)
+			result.push_back({ interval.min, std::min(hole.min, interval.max) });
+		if (hole.max < interval.max)
+			result.push_back({ std::max(hole.max, interval.min), interval.max });
+	}
+
+	intervals = std::move(result);
+}
+
+static bool pointOnSurface(const Polygon &polygon, Point &point) {
+	if (polygon.outer().size()<2) return false;
+
+	vector<double> scanlines;
+	Box bbox;
+	geom::envelope(polygon, bbox);
+	scanlines.push_back((bbox.min_corner().y()+bbox.max_corner().y()) / 2);
+
+	const Ring &outer = polygon.outer();
+	for (size_t i = 0; i+1 < outer.size(); i++) {
+		if (outer[i].y() != outer[i+1].y())
+			scanlines.push_back((outer[i].y()+outer[i+1].y()) / 2);
+	}
+
+	bool found = false;
+	double bestWidth = 0;
+	Point bestPoint;
+
+	for (double y : scanlines) {
+		vector<ScanlineInterval> intervals = scanlineIntervals(polygon.outer(), y);
+
+		for (const auto &inner : polygon.inners()) {
+			vector<ScanlineInterval> holes = scanlineIntervals(inner, y);
+			for (const auto &hole : holes)
+				subtractScanlineInterval(intervals, hole);
+		}
+
+		for (const auto &interval : intervals) {
+			double width = interval.max - interval.min;
+			if (width <= 0) continue;
+
+			Point candidate((interval.min+interval.max) / 2, y);
+			if (!geom::covered_by(candidate, polygon)) continue;
+			if (!found || width > bestWidth) {
+				found = true;
+				bestWidth = width;
+				bestPoint = candidate;
+			}
+		}
+	}
+
+	if (!found) return false;
+
+	point = bestPoint;
+	return true;
+}
+
+static void centroidIfConvex(const Polygon &polygon, Point &centroid) {
+	Polygon hull;
+	geom::convex_hull(polygon, hull);
+	if (geom::num_points(hull) == geom::num_points(polygon)) {
+		geom::centroid(polygon, centroid);
+	} else if (!pointOnSurface(polygon, centroid)) {
+		centroid = mapbox::polylabel(polygon);
+	}
+}
 
 void handleOsmLuaProcessingUserSignal(int signum) {
 	osmLuaProcessing->handleUserSignal(signum);
@@ -871,12 +982,7 @@ Point OsmLuaProcessing::calculateCentroid(CentroidAlgorithm algorithm) {
 
 			if (tmp.size() == 0)
 				throw geom::centroid_exception();
-			Polygon hull;
-			geom::convex_hull(tmp[index], hull);
-			if (geom::num_points(hull) == geom::num_points(tmp[index]))
-				geom::centroid(tmp[index], centroid);
-			else
-				geom::point_on_surface(tmp[index], centroid);
+			centroidIfConvex(tmp[index], centroid);
 		} else {
 			geom::centroid(tmp, centroid);
 		}
@@ -899,12 +1005,7 @@ Point OsmLuaProcessing::calculateCentroid(CentroidAlgorithm algorithm) {
 				// CONSIDER: pick precision intelligently
 				centroid = mapbox::polylabel(p);
 			} else if (algorithm == CentroidAlgorithm::CentroidIfConvex) {
-				Polygon hull;
-				geom::convex_hull(p, hull);
-				if (geom::num_points(hull) == geom::num_points(p))
-					geom::centroid(p, centroid);
-				else
-					geom::point_on_surface(p, centroid);
+				centroidIfConvex(p, centroid);
 			} else {
 				geom::centroid(p, centroid);
 			}
