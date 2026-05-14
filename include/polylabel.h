@@ -6,7 +6,7 @@
 // Adapted to use Boost Geometry instead of MapBox's geometry library.
 //
 // Changes:
-// - Default precision changed from 1 to 0.00001.
+// - Default precision changed from 1 to 0.000001.
 //   @mourner has some comments about what a reasonable precision value is
 //   for latitude/longitude coordinates, see
 //   https://github.com/mapbox/polylabel/issues/68#issuecomment-694906027
@@ -127,7 +127,7 @@ Cell getCentroidCell(const Polygon& polygon) {
 
 } // namespace detail
 
-Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug = false) {
+Point polylabel(const Polygon& polygon, double precision = 0.000001, bool debug = false) {
     using namespace detail;
 
     // find the bounding box of the outer ring
