@@ -870,8 +870,8 @@ function GetPOIRank()
 end
 
 function SetBuildingHeightAttributes()
-	local height = tonumber(Find("height"), 10)
-	local minHeight = tonumber(Find("min_height"), 10)
+	local height = tonumber(Find("height"))
+	local minHeight = tonumber(Find("min_height"))
 	local levels = tonumber(Find("building:levels"), 10)
 	local minLevel = tonumber(Find("building:min_level"), 10)
 
