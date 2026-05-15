@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 
 #include "osm_lua_processing.h"
@@ -20,6 +21,114 @@ thread_local OsmLuaProcessing* osmLuaProcessing = nullptr;
 std::mutex vectorLayerMetadataMutex;
 std::unordered_map<std::string, std::string> OsmLuaProcessing::dataStore;
 std::mutex OsmLuaProcessing::dataStoreMutex;
+
+struct ScanlineInterval {
+	double min;
+	double max;
+};
+
+static void addScanlineIntersections(const Ring &ring, double y, vector<double> &intersections) {
+	if (ring.size()<2) return;
+
+	for (size_t i = 0; i+1 < ring.size(); i++) {
+		const Point &a = ring[i];
+		const Point &b = ring[i+1];
+		double ay = a.y();
+		double by = b.y();
+
+		if (ay == by) continue;
+		if ((ay <= y && y < by) || (by <= y && y < ay)) {
+			double x = a.x() + (y-ay) * (b.x()-a.x()) / (by-ay);
+			intersections.push_back(x);
+		}
+	}
+}
+
+static vector<ScanlineInterval> scanlineIntervals(const Ring &ring, double y) {
+	vector<double> intersections;
+	addScanlineIntersections(ring, y, intersections);
+	sort(intersections.begin(), intersections.end());
+
+	vector<ScanlineInterval> intervals;
+	for (size_t i = 0; i+1 < intersections.size(); i += 2) {
+		if (intersections[i] < intersections[i+1])
+			intervals.push_back({ intersections[i], intersections[i+1] });
+	}
+	return intervals;
+}
+
+static void subtractScanlineInterval(vector<ScanlineInterval> &intervals, const ScanlineInterval &hole) {
+	vector<ScanlineInterval> result;
+
+	for (const auto &interval : intervals) {
+		if (hole.max <= interval.min || hole.min >= interval.max) {
+			result.push_back(interval);
+			continue;
+		}
+
+		if (hole.min > interval.min)
+			result.push_back({ interval.min, std::min(hole.min, interval.max) });
+		if (hole.max < interval.max)
+			result.push_back({ std::max(hole.max, interval.min), interval.max });
+	}
+
+	intervals = std::move(result);
+}
+
+static bool pointOnSurface(const Polygon &polygon, Point &point) {
+	if (polygon.outer().size()<2) return false;
+
+	vector<double> scanlines;
+	Box bbox;
+	geom::envelope(polygon, bbox);
+	scanlines.push_back((bbox.min_corner().y()+bbox.max_corner().y()) / 2);
+
+	const Ring &outer = polygon.outer();
+	for (size_t i = 0; i+1 < outer.size(); i++) {
+		if (outer[i].y() != outer[i+1].y())
+			scanlines.push_back((outer[i].y()+outer[i+1].y()) / 2);
+	}
+
+	bool found = false;
+	double bestWidth = 0;
+	Point bestPoint;
+
+	for (double y : scanlines) {
+		vector<ScanlineInterval> intervals = scanlineIntervals(polygon.outer(), y);
+
+		for (const auto &inner : polygon.inners()) {
+			vector<ScanlineInterval> holes = scanlineIntervals(inner, y);
+			for (const auto &hole : holes)
+				subtractScanlineInterval(intervals, hole);
+		}
+
+		for (const auto &interval : intervals) {
+			double width = interval.max - interval.min;
+			if (width <= 0) continue;
+
+			Point candidate((interval.min+interval.max) / 2, y);
+			if (!geom::covered_by(candidate, polygon)) continue;
+			if (!found || width > bestWidth) {
+				found = true;
+				bestWidth = width;
+				bestPoint = candidate;
+			}
+		}
+	}
+
+	if (!found) return false;
+
+	point = bestPoint;
+	return true;
+}
+
+static void centroidIfCovered(const Polygon &polygon, Point &centroid) {
+	geom::centroid(polygon, centroid);
+	if (geom::covered_by(centroid, polygon)) return;
+
+	if (!pointOnSurface(polygon, centroid))
+		centroid = mapbox::polylabel(polygon);
+}
 
 void handleOsmLuaProcessingUserSignal(int signum) {
 	osmLuaProcessing->handleUserSignal(signum);
@@ -723,7 +832,8 @@ void OsmLuaProcessing::Layer(const string &layerName, bool area) {
 // Emit a point. This function can be called for nodes, ways or relations.
 //
 // When called for a 2D geometry, you can pass a preferred centroid algorithm
-// in `centroid-algorithm`. Currently `polylabel` and `centroid` are supported.
+// in `centroid-algorithm`. Currently `polylabel`, `centroid`, and
+// `centroid_if_covered` are supported.
 //
 // When called for a relation, you can pass a list of roles. The point of a node
 // with that role will be used if available.
@@ -857,6 +967,20 @@ Point OsmLuaProcessing::calculateCentroid(CentroidAlgorithm algorithm) {
 			if (tmp.size() == 0)
 				throw geom::centroid_exception();
 			centroid = mapbox::polylabel(tmp[index]);
+		} else if (algorithm == CentroidAlgorithm::CentroidIfCovered) {
+			int index = 0;
+			double biggestSize = 0;
+			for (int i = 0; i < tmp.size(); i++) {
+				double size = geom::area(tmp[i]);
+				if (size > biggestSize) {
+					biggestSize = size;
+					index = i;
+				}
+			}
+
+			if (tmp.size() == 0)
+				throw geom::centroid_exception();
+			centroidIfCovered(tmp[index], centroid);
 		} else {
 			geom::centroid(tmp, centroid);
 		}
@@ -878,6 +1002,8 @@ Point OsmLuaProcessing::calculateCentroid(CentroidAlgorithm algorithm) {
 			if (algorithm == CentroidAlgorithm::Polylabel) {
 				// CONSIDER: pick precision intelligently
 				centroid = mapbox::polylabel(p);
+			} else if (algorithm == CentroidAlgorithm::CentroidIfCovered) {
+				centroidIfCovered(p, centroid);
 			} else {
 				geom::centroid(p, centroid);
 			}
@@ -891,6 +1017,7 @@ Point OsmLuaProcessing::calculateCentroid(CentroidAlgorithm algorithm) {
 OsmLuaProcessing::CentroidAlgorithm OsmLuaProcessing::parseCentroidAlgorithm(const std::string& algorithm) const {
 	if (algorithm == "polylabel") return OsmLuaProcessing::CentroidAlgorithm::Polylabel;
 	if (algorithm == "centroid") return OsmLuaProcessing::CentroidAlgorithm::Centroid;
+	if (algorithm == "centroid_if_covered") return OsmLuaProcessing::CentroidAlgorithm::CentroidIfCovered;
 
 	throw std::runtime_error("unknown centroid algorithm " + algorithm);
 }

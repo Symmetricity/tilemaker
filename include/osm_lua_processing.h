@@ -160,7 +160,7 @@ public:
 	// Return centroid lat/lon
 	kaguya::optional<std::vector<double>> Centroid(kaguya::VariadicArgType algorithm);
 
-	enum class CentroidAlgorithm: char { Centroid = 0, Polylabel = 1 };
+	enum class CentroidAlgorithm: char { Centroid = 0, Polylabel = 1, CentroidIfCovered = 2 };
 	CentroidAlgorithm defaultCentroidAlgorithm() const { return CentroidAlgorithm::Polylabel; }
 	CentroidAlgorithm parseCentroidAlgorithm(const std::string& algorithm) const;
 	Point calculateCentroid(CentroidAlgorithm algorithm);
