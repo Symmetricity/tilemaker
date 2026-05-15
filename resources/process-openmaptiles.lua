@@ -654,7 +654,7 @@ function way_function()
 
 	-- Set 'housenumber'
 	if housenumber~="" then
-		LayerAsCentroid("housenumber")
+		LayerAsCentroid("housenumber", "centroid_if_covered")
 		Attribute("housenumber", housenumber)
 	end
 
@@ -722,7 +722,7 @@ function way_function()
 
 	-- Catch-all
 	if (building~="" or write_name) and Holds("name") then
-		LayerAsCentroid("poi_detail")
+		LayerAsCentroid("poi_detail", "centroid_if_covered")
 		SetNameAttributes()
 		if write_name then rank=6 else rank=25 end
 		AttributeInteger("rank", rank)
@@ -751,7 +751,7 @@ end
 function WritePOI(class,subclass,rank)
 	local layer = "poi"
 	if rank>4 then layer="poi_detail" end
-	LayerAsCentroid(layer)
+	LayerAsCentroid(layer, "centroid_if_covered")
 	SetNameAttributes()
 	AttributeInteger("rank", rank)
 	Attribute("class", class)
