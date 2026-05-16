@@ -382,71 +382,6 @@ jobs:
           ${{ env.AREA }}-repeat.mbtiles
           ${{ env.AREA }}-repeat.pmtiles
 
-
-  Github-Action:
-    name: Generate mbtiles with Github Action
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: download-pbf
-    if: ${{ needs.download-pbf.outputs.pbf-available == 'true' }}
-
-    steps:
-    - name: Check out repository
-      uses: actions/checkout@v6
-
-    - name: Download PBF file
-      uses: actions/download-artifact@v8
-      with:
-        name: pbf-fixture
-
-    - name: Build openmaptiles-compatible pmtiles file
-      uses: ./
-      with:
-        input: ${{ env.AREA }}.osm.pbf
-        output: ${{ env.AREA }}.pmtiles
-
-    - name: Build repeat openmaptiles-compatible pmtiles file
-      uses: ./
-      with:
-        input: ${{ env.AREA }}.osm.pbf
-        output: ${{ env.AREA }}-repeat.pmtiles
-
-    - name: Build openmaptiles-compatible mbtiles file
-      uses: ./
-      with:
-        input: ${{ env.AREA }}.osm.pbf
-        output: ${{ env.AREA }}.mbtiles
-
-    - name: Build repeat openmaptiles-compatible mbtiles file
-      uses: ./
-      with:
-        input: ${{ env.AREA }}.osm.pbf
-        output: ${{ env.AREA }}-repeat.mbtiles
-
-    - name: Check generated tile files
-      run: |
-        for output in \
-          "${AREA}.mbtiles" \
-          "${AREA}.pmtiles" \
-          "${AREA}-repeat.mbtiles" \
-          "${AREA}-repeat.pmtiles"; do
-          if [ ! -s "${output}" ]; then
-            echo "::error title=Tile output missing::tilemaker did not create ${output}"
-            exit 1
-          fi
-        done
-
-    - name: Upload generated tiles
-      uses: actions/upload-artifact@v7
-      with:
-        name: tile-outputs-github-action
-        retention-days: 14
-        path: |
-          ${{ env.AREA }}.mbtiles
-          ${{ env.AREA }}.pmtiles
-          ${{ env.AREA }}-repeat.mbtiles
-          ${{ env.AREA }}-repeat.pmtiles
-
   verify-generated-tiles:
     name: Verify generated tiles
     runs-on: ubuntu-latest
@@ -455,7 +390,6 @@ jobs:
       - Windows-Build
       - unix-build
       - unix-makefile-build
-      - Github-Action
     env:
       PMTILES_VERSION: 1.30.2
 
