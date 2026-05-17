@@ -111,13 +111,13 @@ auto pointToPolygonDist(const Point& point, const Polygon& polygon) {
 }
 
 struct Cell {
-    Cell(const Point& c_, double h_, const Polygon& polygon, double precision, std::uint64_t order_)
+    Cell(const Point& c_, double h_, const Polygon& polygon, double precision, double distancePrecision, std::uint64_t order_)
         : c(c_),
           h(h_),
           d(pointToPolygonDist(c, polygon)),
           max(d + h * std::sqrt(2)),
-          dKey(precisionKey(d, precision)),
-          maxKey(precisionKey(max, precision)),
+          dKey(precisionKey(d, distancePrecision)),
+          maxKey(precisionKey(max, distancePrecision)),
           hKey(precisionKey(h, precision)),
           xKey(precisionKey(c.get<0>(), precision)),
           yKey(precisionKey(c.get<1>(), precision)),
@@ -154,7 +154,7 @@ bool cellIsBetter(const Cell& a, const Cell& b) {
 }
 
 // get polygon centroid
-Cell getCentroidCell(const Polygon& polygon, double precision, std::uint64_t order) {
+Cell getCentroidCell(const Polygon& polygon, double precision, double distancePrecision, std::uint64_t order) {
     double area = 0;
     double cx = 0, cy = 0;
     const auto& ring = polygon.outer();
@@ -169,13 +169,15 @@ Cell getCentroidCell(const Polygon& polygon, double precision, std::uint64_t ord
     }
 
     Point c { cx, cy };
-    return Cell(area == 0 ? ring.at(0) : Point { cx / area, cy / area }, 0, polygon, precision, order);
+    return Cell(area == 0 ? ring.at(0) : Point { cx / area, cy / area }, 0, polygon, precision, distancePrecision, order);
 }
 
 } // namespace detail
 
 Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug = false) {
     using namespace detail;
+    const double distancePrecision = precision / 100.0;
+    const auto precisionMargin = precisionKey(precision, distancePrecision);
 
     // find the bounding box of the outer ring
     Box envelope;
@@ -205,19 +207,19 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
 
     for (double x = envelope.min_corner().get<0>(); x < envelope.max_corner().get<0>(); x += cellSize) {
         for (double y = envelope.min_corner().get<1>(); y < envelope.max_corner().get<1>(); y += cellSize) {
-            cellQueue.push(Cell({x + h, y + h}, h, polygon, precision, cellOrder++));
+            cellQueue.push(Cell({x + h, y + h}, h, polygon, precision, distancePrecision, cellOrder++));
         }
     }
 
     // take centroid as the first best guess
-    auto bestCell = getCentroidCell(polygon, precision, cellOrder++);
+    auto bestCell = getCentroidCell(polygon, precision, distancePrecision, cellOrder++);
 
     // second guess: bounding box centroid
     Cell bboxCell(
         Point {
             envelope.min_corner().get<0>() + size.get<0>() / 2.0,
             envelope.min_corner().get<1>() + size.get<1>() / 2.0
-        }, 0, polygon, precision, cellOrder++);
+        }, 0, polygon, precision, distancePrecision, cellOrder++);
     if (cellIsBetter(bboxCell, bestCell)) {
         bestCell = bboxCell;
     }
@@ -235,14 +237,14 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
         }
 
         // do not drill down further if there's no chance of a better solution
-        if (cell.maxKey - bestCell.dKey <= 1) continue;
+        if (cell.maxKey - bestCell.dKey <= precisionMargin) continue;
 
         // split the cell into four cells
         h = cell.h / 2;
-        cellQueue.push(Cell({cell.c.get<0>() - h, cell.c.get<1>() - h}, h, polygon, precision, cellOrder++));
-        cellQueue.push(Cell({cell.c.get<0>() + h, cell.c.get<1>() - h}, h, polygon, precision, cellOrder++));
-        cellQueue.push(Cell({cell.c.get<0>() - h, cell.c.get<1>() + h}, h, polygon, precision, cellOrder++));
-        cellQueue.push(Cell({cell.c.get<0>() + h, cell.c.get<1>() + h}, h, polygon, precision, cellOrder++));
+        cellQueue.push(Cell({cell.c.get<0>() - h, cell.c.get<1>() - h}, h, polygon, precision, distancePrecision, cellOrder++));
+        cellQueue.push(Cell({cell.c.get<0>() + h, cell.c.get<1>() - h}, h, polygon, precision, distancePrecision, cellOrder++));
+        cellQueue.push(Cell({cell.c.get<0>() - h, cell.c.get<1>() + h}, h, polygon, precision, distancePrecision, cellOrder++));
+        cellQueue.push(Cell({cell.c.get<0>() + h, cell.c.get<1>() + h}, h, polygon, precision, distancePrecision, cellOrder++));
         numProbes += 4;
     }
 
