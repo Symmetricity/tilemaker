@@ -15,8 +15,8 @@ TileBbox::TileBbox(TileCoordinates i, uint z, bool h, bool e) {
 	minLat = tiley2lat(i.y+1,zoom);
 	maxLon = tilex2lon(i.x+1,zoom);
 	maxLat = tiley2lat(i.y  ,zoom);
-	minLatp = lat2latp(minLat);
-	maxLatp = lat2latp(maxLat);
+	minLatp = tiley2latp(i.y+1,zoom);
+	maxLatp = tiley2latp(i.y  ,zoom);
 	xmargin = (maxLon -minLon )/200.0;
 	ymargin = (maxLatp-minLatp)/200.0;
 	xscale  = (maxLon -minLon )/(hires ? 8192.0 : 4096.0);
