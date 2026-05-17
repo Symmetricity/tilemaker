@@ -48,6 +48,14 @@ double precisionValue(std::int64_t key, double precision) {
     return static_cast<double>(key) * divisor;
 }
 
+constexpr std::int64_t distanceKeyTolerance = 2;
+
+int compareDistanceKey(std::int64_t a, std::int64_t b) {
+    if (a > b) return (a - b > distanceKeyTolerance) ? 1 : 0;
+    if (b > a) return (b - a > distanceKeyTolerance) ? -1 : 0;
+    return 0;
+}
+
 // get squared distance from a point to a segment
 double getSegDistSq(const Point& p,
                const Point& a,
@@ -137,8 +145,10 @@ struct Cell {
 };
 
 bool cellPriorityLess(const Cell& a, const Cell& b) {
-    if (a.maxKey != b.maxKey) return a.maxKey < b.maxKey;
-    if (a.dKey != b.dKey) return a.dKey < b.dKey;
+    const int maxCompare = compareDistanceKey(a.maxKey, b.maxKey);
+    if (maxCompare != 0) return maxCompare < 0;
+    const int distanceCompare = compareDistanceKey(a.dKey, b.dKey);
+    if (distanceCompare != 0) return distanceCompare < 0;
     if (a.hKey != b.hKey) return a.hKey > b.hKey;
     if (a.xKey != b.xKey) return a.xKey > b.xKey;
     if (a.yKey != b.yKey) return a.yKey > b.yKey;
@@ -146,7 +156,8 @@ bool cellPriorityLess(const Cell& a, const Cell& b) {
 }
 
 bool cellIsBetter(const Cell& a, const Cell& b) {
-    if (a.dKey != b.dKey) return a.dKey > b.dKey;
+    const int distanceCompare = compareDistanceKey(a.dKey, b.dKey);
+    if (distanceCompare != 0) return distanceCompare > 0;
     if (a.hKey != b.hKey) return a.hKey < b.hKey;
     if (a.xKey != b.xKey) return a.xKey < b.xKey;
     if (a.yKey != b.yKey) return a.yKey < b.yKey;
@@ -237,7 +248,7 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
         }
 
         // do not drill down further if there's no chance of a better solution
-        if (cell.maxKey - bestCell.dKey <= precisionMargin) continue;
+        if (cell.maxKey + distanceKeyTolerance - bestCell.dKey <= precisionMargin) continue;
 
         // split the cell into four cells
         h = cell.h / 2;
