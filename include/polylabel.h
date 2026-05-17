@@ -48,6 +48,13 @@ double precisionValue(std::int64_t key, double precision) {
     return static_cast<double>(key) * divisor;
 }
 
+Point precisionPoint(const Point& point, double precision) {
+    return Point {
+        precisionValue(precisionKey(point.get<0>(), precision), precision),
+        precisionValue(precisionKey(point.get<1>(), precision), precision)
+    };
+}
+
 // get squared distance from a point to a segment
 double getSegDistSq(const Point& p,
                const Point& a,
@@ -112,7 +119,7 @@ auto pointToPolygonDist(const Point& point, const Polygon& polygon) {
 
 struct Cell {
     Cell(const Point& c_, double h_, const Polygon& polygon, double precision, std::uint64_t order_)
-        : c(c_),
+        : c(precisionPoint(c_, precision)),
           h(h_),
           d(pointToPolygonDist(c, polygon)),
           max(d + h * std::sqrt(2)),
