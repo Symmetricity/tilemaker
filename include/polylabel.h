@@ -43,6 +43,11 @@ std::int64_t precisionKey(double value, double precision) {
     return static_cast<std::int64_t>(std::llround(scaled));
 }
 
+double precisionValue(std::int64_t key, double precision) {
+    const double divisor = precision > 0 ? precision : std::numeric_limits<double>::epsilon();
+    return static_cast<double>(key) * divisor;
+}
+
 // get squared distance from a point to a segment
 double getSegDistSq(const Point& p,
                const Point& a,
@@ -246,7 +251,7 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
         std::cout << "best distance: " << bestCell.d << std::endl;
     }
 
-    return bestCell.c;
+    return Point { precisionValue(bestCell.xKey, precision), precisionValue(bestCell.yKey, precision) };
 }
 
 } // namespace mapbox
