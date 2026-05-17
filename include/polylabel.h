@@ -23,12 +23,25 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <limits>
 #include <queue>
 
 namespace mapbox {
 
 namespace detail {
+
+std::int64_t precisionKey(double value, double precision) {
+    const double divisor = precision > 0 ? precision : std::numeric_limits<double>::epsilon();
+    const double scaled = value / divisor;
+
+    if (scaled >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+        return std::numeric_limits<std::int64_t>::max();
+    if (scaled <= static_cast<double>(std::numeric_limits<std::int64_t>::min()))
+        return std::numeric_limits<std::int64_t>::min();
+    return static_cast<std::int64_t>(std::llround(scaled));
+}
 
 // get squared distance from a point to a segment
 double getSegDistSq(const Point& p,
@@ -93,21 +106,50 @@ auto pointToPolygonDist(const Point& point, const Polygon& polygon) {
 }
 
 struct Cell {
-    Cell(const Point& c_, double h_, const Polygon& polygon)
+    Cell(const Point& c_, double h_, const Polygon& polygon, double precision, std::uint64_t order_)
         : c(c_),
           h(h_),
           d(pointToPolygonDist(c, polygon)),
-          max(d + h * std::sqrt(2))
+          max(d + h * std::sqrt(2)),
+          dKey(precisionKey(d, precision)),
+          maxKey(precisionKey(max, precision)),
+          hKey(precisionKey(h, precision)),
+          xKey(precisionKey(c.get<0>(), precision)),
+          yKey(precisionKey(c.get<1>(), precision)),
+          order(order_)
         {}
 
     Point c; // cell center
     double h; // half the cell size
     double d; // distance from cell center to polygon
     double max; // max distance to polygon within a cell
+    std::int64_t dKey;
+    std::int64_t maxKey;
+    std::int64_t hKey;
+    std::int64_t xKey;
+    std::int64_t yKey;
+    std::uint64_t order;
 };
 
+bool cellPriorityLess(const Cell& a, const Cell& b) {
+    if (a.maxKey != b.maxKey) return a.maxKey < b.maxKey;
+    if (a.dKey != b.dKey) return a.dKey < b.dKey;
+    if (a.hKey != b.hKey) return a.hKey > b.hKey;
+    if (a.xKey != b.xKey) return a.xKey > b.xKey;
+    if (a.yKey != b.yKey) return a.yKey > b.yKey;
+    return a.order > b.order;
+}
+
+bool cellIsBetter(const Cell& a, const Cell& b) {
+    if (a.dKey != b.dKey) return a.dKey > b.dKey;
+    if (a.hKey != b.hKey) return a.hKey < b.hKey;
+    if (a.xKey != b.xKey) return a.xKey < b.xKey;
+    if (a.yKey != b.yKey) return a.yKey < b.yKey;
+    return a.order < b.order;
+}
+
 // get polygon centroid
-Cell getCentroidCell(const Polygon& polygon) {
+Cell getCentroidCell(const Polygon& polygon, double precision, std::uint64_t order) {
     double area = 0;
     double cx = 0, cy = 0;
     const auto& ring = polygon.outer();
@@ -122,7 +164,7 @@ Cell getCentroidCell(const Polygon& polygon) {
     }
 
     Point c { cx, cy };
-    return Cell(area == 0 ? ring.at(0) : Point { cx / area, cy / area }, 0, polygon);
+    return Cell(area == 0 ? ring.at(0) : Point { cx / area, cy / area }, 0, polygon, precision, order);
 }
 
 } // namespace detail
@@ -144,7 +186,7 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
 
     // a priority queue of cells in order of their "potential" (max distance to polygon)
     auto compareMax = [] (const Cell& a, const Cell& b) {
-        return a.max < b.max;
+        return cellPriorityLess(a, b);
     };
     using Queue = std::priority_queue<Cell, std::vector<Cell>, decltype(compareMax)>;
     Queue cellQueue(compareMax);
@@ -154,23 +196,24 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
     }
 
     // cover polygon with initial cells
+    std::uint64_t cellOrder = 0;
 
     for (double x = envelope.min_corner().get<0>(); x < envelope.max_corner().get<0>(); x += cellSize) {
         for (double y = envelope.min_corner().get<1>(); y < envelope.max_corner().get<1>(); y += cellSize) {
-            cellQueue.push(Cell({x + h, y + h}, h, polygon));
+            cellQueue.push(Cell({x + h, y + h}, h, polygon, precision, cellOrder++));
         }
     }
 
     // take centroid as the first best guess
-    auto bestCell = getCentroidCell(polygon);
+    auto bestCell = getCentroidCell(polygon, precision, cellOrder++);
 
     // second guess: bounding box centroid
     Cell bboxCell(
         Point {
             envelope.min_corner().get<0>() + size.get<0>() / 2.0,
             envelope.min_corner().get<1>() + size.get<1>() / 2.0
-        }, 0, polygon);
-    if (bboxCell.d > bestCell.d) {
+        }, 0, polygon, precision, cellOrder++);
+    if (cellIsBetter(bboxCell, bestCell)) {
         bestCell = bboxCell;
     }
 
@@ -181,20 +224,20 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
         cellQueue.pop();
 
         // update the best cell if we found a better one
-        if (cell.d > bestCell.d) {
+        if (cellIsBetter(cell, bestCell)) {
             bestCell = cell;
             if (debug) std::cout << "found best " << ::round(1e4 * cell.d) / 1e4 << " after " << numProbes << " probes" << std::endl;
         }
 
         // do not drill down further if there's no chance of a better solution
-        if (cell.max - bestCell.d <= precision) continue;
+        if (cell.maxKey - bestCell.dKey <= 1) continue;
 
         // split the cell into four cells
         h = cell.h / 2;
-        cellQueue.push(Cell({cell.c.get<0>() - h, cell.c.get<1>() - h}, h, polygon));
-        cellQueue.push(Cell({cell.c.get<0>() + h, cell.c.get<1>() - h}, h, polygon));
-        cellQueue.push(Cell({cell.c.get<0>() - h, cell.c.get<1>() + h}, h, polygon));
-        cellQueue.push(Cell({cell.c.get<0>() + h, cell.c.get<1>() + h}, h, polygon));
+        cellQueue.push(Cell({cell.c.get<0>() - h, cell.c.get<1>() - h}, h, polygon, precision, cellOrder++));
+        cellQueue.push(Cell({cell.c.get<0>() + h, cell.c.get<1>() - h}, h, polygon, precision, cellOrder++));
+        cellQueue.push(Cell({cell.c.get<0>() - h, cell.c.get<1>() + h}, h, polygon, precision, cellOrder++));
+        cellQueue.push(Cell({cell.c.get<0>() + h, cell.c.get<1>() + h}, h, polygon, precision, cellOrder++));
         numProbes += 4;
     }
 
