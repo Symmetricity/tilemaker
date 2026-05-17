@@ -116,7 +116,7 @@ struct Cell {
           h(h_),
           d(pointToPolygonDist(c, polygon)),
           max(d + h * std::sqrt(2)),
-          dKey(precisionKey(d, distancePrecision)),
+          dKey(precisionKey(d, precision)),
           maxKey(precisionKey(max, distancePrecision)),
           hKey(precisionKey(h, precision)),
           xKey(precisionKey(c.get<0>(), precision)),
@@ -176,7 +176,7 @@ Cell getCentroidCell(const Polygon& polygon, double precision, double distancePr
 
 Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug = false) {
     using namespace detail;
-    const double distancePrecision = precision / 1000.0;
+    const double distancePrecision = precision / 100.0;
     const auto precisionMargin = precisionKey(precision, distancePrecision);
 
     // find the bounding box of the outer ring
