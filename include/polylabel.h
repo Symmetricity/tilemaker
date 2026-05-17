@@ -48,16 +48,6 @@ double precisionValue(std::int64_t key, double precision) {
     return static_cast<double>(key) * divisor;
 }
 
-bool keyGreater(std::int64_t a, std::int64_t b) {
-    if (b >= std::numeric_limits<std::int64_t>::max() - 1)
-        return false;
-    return a > b + 1;
-}
-
-bool keyLess(std::int64_t a, std::int64_t b) {
-    return keyGreater(b, a);
-}
-
 // get squared distance from a point to a segment
 double getSegDistSq(const Point& p,
                const Point& a,
@@ -147,10 +137,8 @@ struct Cell {
 };
 
 bool cellPriorityLess(const Cell& a, const Cell& b) {
-    if (keyLess(a.maxKey, b.maxKey)) return true;
-    if (keyGreater(a.maxKey, b.maxKey)) return false;
-    if (keyLess(a.dKey, b.dKey)) return true;
-    if (keyGreater(a.dKey, b.dKey)) return false;
+    if (a.maxKey != b.maxKey) return a.maxKey < b.maxKey;
+    if (a.dKey != b.dKey) return a.dKey < b.dKey;
     if (a.hKey != b.hKey) return a.hKey > b.hKey;
     if (a.xKey != b.xKey) return a.xKey > b.xKey;
     if (a.yKey != b.yKey) return a.yKey > b.yKey;
@@ -158,8 +146,7 @@ bool cellPriorityLess(const Cell& a, const Cell& b) {
 }
 
 bool cellIsBetter(const Cell& a, const Cell& b) {
-    if (keyGreater(a.dKey, b.dKey)) return true;
-    if (keyLess(a.dKey, b.dKey)) return false;
+    if (a.dKey != b.dKey) return a.dKey > b.dKey;
     if (a.hKey != b.hKey) return a.hKey < b.hKey;
     if (a.xKey != b.xKey) return a.xKey < b.xKey;
     if (a.yKey != b.yKey) return a.yKey < b.yKey;
@@ -248,7 +235,7 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
         }
 
         // do not drill down further if there's no chance of a better solution
-        if (!keyGreater(cell.maxKey, bestCell.dKey)) continue;
+        if (cell.maxKey - bestCell.dKey <= 1) continue;
 
         // split the cell into four cells
         h = cell.h / 2;
