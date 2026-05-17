@@ -48,6 +48,16 @@ double precisionValue(std::int64_t key, double precision) {
     return static_cast<double>(key) * divisor;
 }
 
+bool keyGreater(std::int64_t a, std::int64_t b) {
+    if (b >= std::numeric_limits<std::int64_t>::max() - 1)
+        return false;
+    return a > b + 1;
+}
+
+bool keyLess(std::int64_t a, std::int64_t b) {
+    return keyGreater(b, a);
+}
+
 // get squared distance from a point to a segment
 double getSegDistSq(const Point& p,
                const Point& a,
@@ -137,7 +147,8 @@ struct Cell {
 };
 
 bool cellPriorityLess(const Cell& a, const Cell& b) {
-    if (a.maxKey != b.maxKey) return a.maxKey < b.maxKey;
+    if (keyLess(a.maxKey, b.maxKey)) return true;
+    if (keyGreater(a.maxKey, b.maxKey)) return false;
     if (a.dKey != b.dKey) return a.dKey < b.dKey;
     if (a.hKey != b.hKey) return a.hKey > b.hKey;
     if (a.xKey != b.xKey) return a.xKey > b.xKey;
