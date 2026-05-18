@@ -1,4 +1,5 @@
 #include <iostream>
+#include <sstream>
 
 #include "osm_lua_processing.h"
 #include "attribute_store.h"
@@ -14,6 +15,7 @@
 using namespace std;
 
 const std::string EMPTY_STRING = "";
+const int64_t DEBUG_POLYLABEL_OSM_ID = 165295830;
 thread_local kaguya::State *g_luaState = nullptr;
 thread_local OsmLuaProcessing* osmLuaProcessing = nullptr;
 
@@ -786,8 +788,15 @@ void OsmLuaProcessing::LayerAsCentroid(const string &layerName, kaguya::Variadic
 			}
 		}
 
-		if (!centroidFound)
+		if (!centroidFound) {
+			if (originalOsmID == DEBUG_POLYLABEL_OSM_ID) {
+				cerr << "polylabel way " << originalOsmID
+				     << " LayerAsCentroid layer=" << layerName
+				     << " algorithm=" << (algorithm == CentroidAlgorithm::Polylabel ? "polylabel" : "centroid")
+				     << endl;
+			}
 			geomp = calculateCentroid(algorithm);
+		}
 
 		// TODO: I think geom::is_empty always returns false for Points?
 		// See https://github.com/boostorg/geometry/blob/fa3623528ea27ba2c3c1327e4b67408a2b567038/include/boost/geometry/algorithms/is_empty.hpp#L103
@@ -856,7 +865,13 @@ Point OsmLuaProcessing::calculateCentroid(CentroidAlgorithm algorithm) {
 
 			if (tmp.size() == 0)
 				throw geom::centroid_exception();
-			centroid = mapbox::polylabel(tmp[index]);
+			if (originalOsmID == DEBUG_POLYLABEL_OSM_ID) {
+				std::ostringstream label;
+				label << "relation " << originalOsmID << " polygon " << index;
+				centroid = mapbox::polylabel(tmp[index], 0.00001, true, label.str());
+			} else {
+				centroid = mapbox::polylabel(tmp[index]);
+			}
 		} else {
 			geom::centroid(tmp, centroid);
 		}
@@ -877,7 +892,13 @@ Point OsmLuaProcessing::calculateCentroid(CentroidAlgorithm algorithm) {
 
 			if (algorithm == CentroidAlgorithm::Polylabel) {
 				// CONSIDER: pick precision intelligently
-				centroid = mapbox::polylabel(p);
+				if (originalOsmID == DEBUG_POLYLABEL_OSM_ID) {
+					std::ostringstream label;
+					label << "way " << originalOsmID;
+					centroid = mapbox::polylabel(p, 0.00001, true, label.str());
+				} else {
+					centroid = mapbox::polylabel(p);
+				}
 			} else {
 				geom::centroid(p, centroid);
 			}

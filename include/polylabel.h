@@ -24,9 +24,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <queue>
+#include <string>
 
 namespace mapbox {
 
@@ -172,9 +174,22 @@ Cell getCentroidCell(const Polygon& polygon, double precision, double distancePr
     return Cell(area == 0 ? ring.at(0) : Point { cx / area, cy / area }, 0, polygon, precision, distancePrecision, order);
 }
 
+void debugCell(const std::string& label, const char* prefix, const Cell& cell) {
+    std::cerr << std::setprecision(17)
+              << "polylabel " << label << ' ' << prefix
+              << " c=(" << cell.c.get<0>() << ',' << cell.c.get<1>() << ')'
+              << " h=" << cell.h
+              << " d=" << cell.d
+              << " max=" << cell.max
+              << " keys=(" << cell.dKey << ',' << cell.maxKey << ','
+              << cell.hKey << ',' << cell.xKey << ',' << cell.yKey << ')'
+              << " order=" << cell.order
+              << std::endl;
+}
+
 } // namespace detail
 
-Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug = false) {
+Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug = false, const std::string& debugLabel = "") {
     using namespace detail;
     const double distancePrecision = precision / 100.0;
     const auto precisionMargin = precisionKey(precision, distancePrecision);
@@ -190,6 +205,31 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
 
     const double cellSize = std::min(size.get<0>(), size.get<1>());
     double h = cellSize / 2;
+
+    if (debug) {
+        std::cerr << std::setprecision(17)
+                  << "polylabel " << debugLabel
+                  << " envelope=(" << envelope.min_corner().get<0>() << ','
+                  << envelope.min_corner().get<1>() << ")-("
+                  << envelope.max_corner().get<0>() << ','
+                  << envelope.max_corner().get<1>() << ')'
+                  << " size=(" << size.get<0>() << ',' << size.get<1>() << ')'
+                  << " cellSize=" << cellSize
+                  << " precision=" << precision
+                  << " distancePrecision=" << distancePrecision
+                  << " precisionMargin=" << precisionMargin
+                  << " outer=" << polygon.outer().size()
+                  << " inners=" << polygon.inners().size()
+                  << std::endl;
+        std::size_t point = 0;
+        for (const auto& p : polygon.outer()) {
+            std::cerr << std::setprecision(17)
+                      << "polylabel " << debugLabel
+                      << " outer[" << point++ << "]=("
+                      << p.get<0>() << ',' << p.get<1>() << ')'
+                      << std::endl;
+        }
+    }
 
     // a priority queue of cells in order of their "potential" (max distance to polygon)
     auto compareMax = [] (const Cell& a, const Cell& b) {
@@ -213,6 +253,7 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
 
     // take centroid as the first best guess
     auto bestCell = getCentroidCell(polygon, precision, distancePrecision, cellOrder++);
+    if (debug) debugCell(debugLabel, "centroid", bestCell);
 
     // second guess: bounding box centroid
     Cell bboxCell(
@@ -220,20 +261,26 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
             envelope.min_corner().get<0>() + size.get<0>() / 2.0,
             envelope.min_corner().get<1>() + size.get<1>() / 2.0
         }, 0, polygon, precision, distancePrecision, cellOrder++);
+    if (debug) debugCell(debugLabel, "bbox", bboxCell);
     if (cellIsBetter(bboxCell, bestCell)) {
         bestCell = bboxCell;
     }
 
     auto numProbes = cellQueue.size();
+    std::size_t debugPops = 0;
     while (!cellQueue.empty()) {
         // pick the most promising cell from the queue
         auto cell = cellQueue.top();
         cellQueue.pop();
+        if (debug && debugPops < 20) {
+            debugCell(debugLabel, "pop", cell);
+            debugPops++;
+        }
 
         // update the best cell if we found a better one
         if (cellIsBetter(cell, bestCell)) {
             bestCell = cell;
-            if (debug) std::cout << "found best " << ::round(1e4 * cell.d) / 1e4 << " after " << numProbes << " probes" << std::endl;
+            if (debug) debugCell(debugLabel, "best", bestCell);
         }
 
         // do not drill down further if there's no chance of a better solution
@@ -249,8 +296,13 @@ Point polylabel(const Polygon& polygon, double precision = 0.00001, bool debug =
     }
 
     if (debug) {
-        std::cout << "num probes: " << numProbes << std::endl;
-        std::cout << "best distance: " << bestCell.d << std::endl;
+        std::cerr << "polylabel " << debugLabel << " num probes: " << numProbes << std::endl;
+        debugCell(debugLabel, "final", bestCell);
+        std::cerr << std::setprecision(17)
+                  << "polylabel " << debugLabel
+                  << " result=(" << precisionValue(bestCell.xKey, precision)
+                  << ',' << precisionValue(bestCell.yKey, precision) << ')'
+                  << std::endl;
     }
 
     return Point { precisionValue(bestCell.xKey, precision), precisionValue(bestCell.yKey, precision) };
