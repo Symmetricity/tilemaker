@@ -13,42 +13,12 @@ class ClipCache {
 public:
 	ClipCache(size_t threadNum, unsigned int baseZoom):
 		baseZoom(baseZoom),
-		useFixedZoom(false),
-		fixedZoom(0),
-		clipCache(threadNum * 16),
-		clipCacheMutex(threadNum * 16),
-		clipCacheSize(threadNum * 16) {
-	}
-
-	ClipCache(size_t threadNum, unsigned int baseZoom, unsigned int fixedZoom):
-		baseZoom(baseZoom),
-		useFixedZoom(true),
-		fixedZoom(fixedZoom),
 		clipCache(threadNum * 16),
 		clipCacheMutex(threadNum * 16),
 		clipCacheSize(threadNum * 16) {
 	}
 
 	const std::shared_ptr<T> get(uint zoom, TileCoordinate x, TileCoordinate y, NodeID objectID) const{
-		if (useFixedZoom) {
-			if (zoom <= fixedZoom)
-				return nullptr;
-
-			while (zoom > fixedZoom) {
-				zoom--;
-				x /= 2;
-				y /= 2;
-			}
-
-			std::lock_guard<std::mutex> lock(clipCacheMutex[objectID % clipCacheMutex.size()]);
-			const auto& cache = clipCache[objectID % clipCache.size()];
-			const auto& rv = cache.find(std::make_tuple(zoom, TileCoordinates(x, y), objectID));
-			if (rv != cache.end())
-				return rv->second;
-
-			return nullptr;
-		}
-
 		// Look for a previously clipped version at z-1, z-2, ...
 
 		std::lock_guard<std::mutex> lock(clipCacheMutex[objectID % clipCacheMutex.size()]);
@@ -67,12 +37,9 @@ public:
 	}
 
 	void add(const TileBbox& bbox, const NodeID objectID, const T& output) {
-		if (useFixedZoom && bbox.zoom != fixedZoom)
-			return;
-
 		// The point of caching is to reuse the clip, so caching at the terminal zoom is
 		// pointless.
-		if (!useFixedZoom && bbox.zoom == baseZoom)
+		if (bbox.zoom == baseZoom)
 			return;
 
 		std::shared_ptr<T> copy = std::make_shared<T>();
@@ -104,8 +71,6 @@ public:
 
 private:
 	unsigned int baseZoom;
-	bool useFixedZoom;
-	unsigned int fixedZoom;
 	std::vector<std::map<std::tuple<uint16_t, TileCoordinates, NodeID>, std::shared_ptr<T>>> clipCache;
 	mutable std::vector<std::mutex> clipCacheMutex;
 	std::vector<size_t> clipCacheSize;
