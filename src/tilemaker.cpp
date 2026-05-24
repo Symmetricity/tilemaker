@@ -468,6 +468,15 @@ int main(const int argc, const char* argv[]) {
 		return coords;
 	};
 
+	const unsigned int subtreeZoom = std::min(config.baseZoom, 9u);
+	auto subtreeCoordinates = [subtreeZoom](unsigned int zoom, TileCoordinates coords) {
+		if (zoom > subtreeZoom) {
+			coords.x /= (1 << (zoom - subtreeZoom));
+			coords.y /= (1 << (zoom - subtreeZoom));
+		}
+		return coords;
+	};
+
 	auto computeBatchSize = [&](std::size_t startIndex, std::size_t endIndex) {
 		std::size_t batchSize = 0;
 		size_t weight = 0;
@@ -570,15 +579,19 @@ int main(const int argc, const char* argv[]) {
 		std::size_t clusterEnd = startIndex;
 		boost::asio::post(pool, [&, clusterStart, clusterEnd]() {
 			std::size_t childStart = clusterStart;
-			while (childStart < clusterEnd && tileCoordinates[childStart].first <= CLUSTER_ZOOM)
+			while (childStart < clusterEnd && tileCoordinates[childStart].first < subtreeZoom)
 				childStart++;
 			if (childStart > clusterStart)
 				writeTileRange(clusterStart, childStart);
 
 			for (std::size_t i = childStart; i < clusterEnd;) {
-				std::size_t batchSize = computeBatchSize(i, clusterEnd);
-				postTileRange(i, i + batchSize);
-				i += batchSize;
+				std::size_t subtreeEnd = i + 1;
+				TileCoordinates subtree = subtreeCoordinates(tileCoordinates[i].first, tileCoordinates[i].second);
+				while (subtreeEnd < clusterEnd && subtreeCoordinates(tileCoordinates[subtreeEnd].first, tileCoordinates[subtreeEnd].second) == subtree)
+					subtreeEnd++;
+
+				postTileRange(i, subtreeEnd);
+				i = subtreeEnd;
 			}
 		});
 	}
