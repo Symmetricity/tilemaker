@@ -348,11 +348,12 @@ jobs:
         key: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-x64-windows-static-md-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
         restore-keys: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-x64-windows-static-md-
 
-    - name: Fetch vcpkg manifest baseline
+    - name: Checkout vcpkg manifest baseline
       shell: pwsh
       run: |
         $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
         git -C $env:VCPKG_INSTALLATION_ROOT fetch --depth=1 origin $baseline
+        git -C $env:VCPKG_INSTALLATION_ROOT checkout --force $baseline
 
     - name: Build dependencies
       run: |
@@ -472,10 +473,11 @@ jobs:
         key: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
         restore-keys: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-${{ matrix.triplet }}-
 
-    - name: Fetch vcpkg manifest baseline
+    - name: Checkout vcpkg manifest baseline
       run: |
         baseline="$(python3 -c 'import json; print(json.load(open("vcpkg.json"))["builtin-baseline"])')"
         git -C "$VCPKG_INSTALLATION_ROOT" fetch --depth=1 origin "$baseline"
+        git -C "$VCPKG_INSTALLATION_ROOT" checkout --force "$baseline"
 
     - name: Build dependencies
       run: |
