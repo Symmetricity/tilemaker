@@ -62,6 +62,9 @@ jobs:
             CMakeLists.txt|Makefile|Dockerfile|action.yml)
               runtime=true
               ;;
+            vcpkg.json|vcpkg-configuration.json)
+              runtime=true
+              ;;
             get-coastline.sh|get-landcover.sh|get-monaco.sh)
               runtime=true
               ;;
@@ -305,23 +308,23 @@ jobs:
       uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}\vcpkg-binary-cache
-        key: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-x64-windows-static-md-${{ hashFiles('.github/workflows/ci.yml') }}
+        key: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-x64-windows-static-md-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
         restore-keys: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-x64-windows-static-md-
 
     - name: Build dependencies
       run: |
-        vcpkg install --triplet=x64-windows-static-md lua shapelib zlib protobuf[zlib] sqlite3 boost-program-options boost-filesystem boost-geometry boost-system boost-asio boost-interprocess boost-iostreams boost-sort rapidjson
+        vcpkg install --triplet=x64-windows-static-md
 
     - name: Build tilemaker
       run: |
         mkdir ${{ github.workspace }}\build
-        cd ${{ github.workspace }}\build && cmake -DTILEMAKER_BUILD_STATIC=ON -DVCPKG_TARGET_TRIPLET="x64-windows-static-md" -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" ..
+        cd ${{ github.workspace }}\build && cmake -DTILEMAKER_BUILD_STATIC=ON -DVCPKG_TARGET_TRIPLET="x64-windows-static-md" -DVCPKG_INSTALLED_DIR="${{ github.workspace }}\vcpkg_installed" -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" ..
         cd ${{ github.workspace }}\build && cmake --build . --config RelWithDebInfo
 
     - name: Build tilemaker without clip cache
       run: |
         mkdir ${{ github.workspace }}\build-no-clip-cache
-        cd ${{ github.workspace }}\build-no-clip-cache && cmake -DTILEMAKER_BUILD_STATIC=ON -DTILEMAKER_DISABLE_CLIP_CACHE=ON -DVCPKG_TARGET_TRIPLET="x64-windows-static-md" -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" ..
+        cd ${{ github.workspace }}\build-no-clip-cache && cmake -DTILEMAKER_BUILD_STATIC=ON -DTILEMAKER_DISABLE_CLIP_CACHE=ON -DVCPKG_TARGET_TRIPLET="x64-windows-static-md" -DVCPKG_INSTALLED_DIR="${{ github.workspace }}\vcpkg_installed" -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" ..
         cd ${{ github.workspace }}\build-no-clip-cache && cmake --build . --config RelWithDebInfo
 
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
@@ -438,18 +441,18 @@ jobs:
       uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}/vcpkg-binary-cache
-        key: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-${{ matrix.triplet }}-${{ hashFiles('.github/workflows/ci.yml') }}
+        key: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
         restore-keys: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-${{ matrix.triplet }}-
 
     - name: Build dependencies
       run: |
-        vcpkg install --triplet="${{ matrix.triplet }}" lua shapelib zlib protobuf[zlib] sqlite3 boost-program-options boost-filesystem boost-geometry boost-system boost-asio boost-interprocess boost-iostreams boost-sort rapidjson
+        vcpkg install --triplet="${{ matrix.triplet }}"
 
     - name: Build tilemaker
       run: |
         mkdir build
         cd build
-        cmake -DTILEMAKER_BUILD_STATIC=ON -DCMAKE_BUILD_TYPE=Release -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_CXX_COMPILER=g++ ..
+        cmake -DTILEMAKER_BUILD_STATIC=ON -DCMAKE_BUILD_TYPE=Release -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" -DVCPKG_INSTALLED_DIR="${{ github.workspace }}/vcpkg_installed" -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_CXX_COMPILER=g++ ..
         cmake --build . 
         strip tilemaker
 
@@ -457,7 +460,7 @@ jobs:
       run: |
         mkdir build-no-clip-cache
         cd build-no-clip-cache
-        cmake -DTILEMAKER_BUILD_STATIC=ON -DTILEMAKER_DISABLE_CLIP_CACHE=ON -DCMAKE_BUILD_TYPE=Release -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_CXX_COMPILER=g++ ..
+        cmake -DTILEMAKER_BUILD_STATIC=ON -DTILEMAKER_DISABLE_CLIP_CACHE=ON -DCMAKE_BUILD_TYPE=Release -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" -DVCPKG_INSTALLED_DIR="${{ github.workspace }}/vcpkg_installed" -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_CXX_COMPILER=g++ ..
         cmake --build .
         strip tilemaker
 
