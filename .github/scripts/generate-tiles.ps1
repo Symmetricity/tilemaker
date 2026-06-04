@@ -6,6 +6,7 @@ param(
 	[string] $Area,
 
 	[Parameter(Mandatory = $true)]
+	[AllowEmptyString()]
 	[string] $OutputSuffix,
 
 	[Parameter(Mandatory = $true)]
