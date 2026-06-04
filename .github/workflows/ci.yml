@@ -325,7 +325,7 @@ jobs:
     - uses: actions/checkout@v6
 
     - name: Install sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
+      uses: mozilla-actions/sccache-action@v0.0.10
 
     - name: Download PBF fixture
       uses: actions/download-artifact@v8
