@@ -11,6 +11,17 @@ class TileBbox;
 template <class T>
 class ClipCache {
 public:
+#ifdef TILEMAKER_DISABLE_CLIP_CACHE
+	ClipCache(size_t, unsigned int) {
+	}
+
+	const std::shared_ptr<T> get(uint, TileCoordinate, TileCoordinate, NodeID) const{
+		return nullptr;
+	}
+
+	void add(const TileBbox&, const NodeID, const T&) {
+	}
+#else
 	ClipCache(size_t threadNum, unsigned int baseZoom):
 		baseZoom(baseZoom),
 		clipCache(threadNum * 16),
@@ -74,6 +85,7 @@ private:
 	std::vector<std::map<std::tuple<uint16_t, TileCoordinates, NodeID>, std::shared_ptr<T>>> clipCache;
 	mutable std::vector<std::mutex> clipCacheMutex;
 	std::vector<size_t> clipCacheSize;
+#endif
 };
 
 #endif

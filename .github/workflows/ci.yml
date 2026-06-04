@@ -318,6 +318,12 @@ jobs:
         cd ${{ github.workspace }}\build && cmake -DTILEMAKER_BUILD_STATIC=ON -DVCPKG_TARGET_TRIPLET="x64-windows-static-md" -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" ..
         cd ${{ github.workspace }}\build && cmake --build . --config RelWithDebInfo
 
+    - name: Build tilemaker without clip cache
+      run: |
+        mkdir ${{ github.workspace }}\build-no-clip-cache
+        cd ${{ github.workspace }}\build-no-clip-cache && cmake -DTILEMAKER_BUILD_STATIC=ON -DTILEMAKER_DISABLE_CLIP_CACHE=ON -DVCPKG_TARGET_TRIPLET="x64-windows-static-md" -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" ..
+        cd ${{ github.workspace }}\build-no-clip-cache && cmake --build . --config RelWithDebInfo
+
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
       run: |
         $tilemaker = "${{ github.workspace }}\build\RelWithDebInfo\tilemaker.exe"
@@ -352,6 +358,41 @@ jobs:
           ${{ env.AREA }}.pmtiles
           ${{ env.AREA }}-repeat.mbtiles
           ${{ env.AREA }}-repeat.pmtiles
+
+    - name: Build semantic-verification tiles without clip cache
+      run: |
+        $tilemaker = "${{ github.workspace }}\build-no-clip-cache\RelWithDebInfo\tilemaker.exe"
+        function Invoke-Tilemaker {
+          param([string] $Output, [string[]] $Arguments)
+          Write-Host "::group::Build $Output"
+          & $tilemaker @Arguments
+          $status = $LASTEXITCODE
+          Write-Host "::endgroup::"
+          if ($status -ne 0) {
+            Write-Error "tilemaker failed while writing $Output with exit code $status"
+            exit $status
+          }
+          if (!(Test-Path -LiteralPath $Output) -or (Get-Item -LiteralPath $Output).Length -eq 0) {
+            Write-Error "tilemaker did not create $Output"
+            exit 1
+          }
+        }
+
+        Invoke-Tilemaker "${{ env.AREA }}-no-clip-cache.pmtiles" @("${{ env.AREA }}.osm.pbf", "--config=resources/config-openmaptiles.json", "--process=resources/process-openmaptiles.lua", "--output=${{ env.AREA }}-no-clip-cache.pmtiles", "--verbose")
+        Invoke-Tilemaker "${{ env.AREA }}-no-clip-cache-repeat.pmtiles" @("${{ env.AREA }}.osm.pbf", "--config=resources/config-openmaptiles.json", "--process=resources/process-openmaptiles.lua", "--output=${{ env.AREA }}-no-clip-cache-repeat.pmtiles", "--verbose")
+        Invoke-Tilemaker "${{ env.AREA }}-no-clip-cache.mbtiles" @("${{ env.AREA }}.osm.pbf", "--config=resources/config-openmaptiles.json", "--process=resources/process-openmaptiles.lua", "--output=${{ env.AREA }}-no-clip-cache.mbtiles", "--store", "${{ runner.temp }}\osm_store_no_clip_cache", "--verbose")
+        Invoke-Tilemaker "${{ env.AREA }}-no-clip-cache-repeat.mbtiles" @("${{ env.AREA }}.osm.pbf", "--config=resources/config-openmaptiles.json", "--process=resources/process-openmaptiles.lua", "--output=${{ env.AREA }}-no-clip-cache-repeat.mbtiles", "--store", "${{ runner.temp }}\osm_store_no_clip_cache_repeat", "--verbose")
+
+    - name: Upload semantic-verification tiles
+      uses: actions/upload-artifact@v7
+      with:
+        name: tile-outputs-no-clip-cache-windows-cmake
+        retention-days: 14
+        path: |
+          ${{ env.AREA }}-no-clip-cache.mbtiles
+          ${{ env.AREA }}-no-clip-cache.pmtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.mbtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.pmtiles
 
     - name: 'Upload compiled executable'
       uses: actions/upload-artifact@v7
@@ -412,6 +453,14 @@ jobs:
         cmake --build . 
         strip tilemaker
 
+    - name: Build tilemaker without clip cache
+      run: |
+        mkdir build-no-clip-cache
+        cd build-no-clip-cache
+        cmake -DTILEMAKER_BUILD_STATIC=ON -DTILEMAKER_DISABLE_CLIP_CACHE=ON -DCMAKE_BUILD_TYPE=Release -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_CXX_COMPILER=g++ ..
+        cmake --build .
+        strip tilemaker
+
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
       run: |
         run_tilemaker() {
@@ -448,6 +497,43 @@ jobs:
           ${{ env.AREA }}.pmtiles
           ${{ env.AREA }}-repeat.mbtiles
           ${{ env.AREA }}-repeat.pmtiles
+
+    - name: Build semantic-verification tiles without clip cache
+      run: |
+        run_tilemaker() {
+          output="$1"
+          shift
+          echo "::group::Build ${output}"
+          if "$@"; then
+            echo "::endgroup::"
+          else
+            status="$?"
+            echo "::endgroup::"
+            echo "::error title=Tile generation failed::tilemaker failed while writing ${output} with exit code ${status}"
+            exit "${status}"
+          fi
+          if [ ! -s "${output}" ]; then
+            echo "::error title=Tile output missing::tilemaker did not create ${output}"
+            exit 1
+          fi
+        }
+
+        tilemaker="${{ github.workspace }}/build-no-clip-cache/${{ matrix.executable }}"
+        run_tilemaker "${{ env.AREA }}-no-clip-cache.pmtiles" "${tilemaker}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-no-clip-cache.pmtiles" --verbose
+        run_tilemaker "${{ env.AREA }}-no-clip-cache-repeat.pmtiles" "${tilemaker}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-no-clip-cache-repeat.pmtiles" --verbose
+        run_tilemaker "${{ env.AREA }}-no-clip-cache.mbtiles" "${tilemaker}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-no-clip-cache.mbtiles" --verbose --store "${{ runner.temp }}/store-no-clip-cache"
+        run_tilemaker "${{ env.AREA }}-no-clip-cache-repeat.mbtiles" "${tilemaker}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-no-clip-cache-repeat.mbtiles" --verbose --store "${{ runner.temp }}/store-no-clip-cache-repeat"
+
+    - name: Upload semantic-verification tiles
+      uses: actions/upload-artifact@v7
+      with:
+        name: tile-outputs-no-clip-cache-${{ matrix.os }}-cmake
+        retention-days: 14
+        path: |
+          ${{ env.AREA }}-no-clip-cache.mbtiles
+          ${{ env.AREA }}-no-clip-cache.pmtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.mbtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.pmtiles
 
     - name: 'Upload compiled executable'
       uses: actions/upload-artifact@v7
@@ -532,6 +618,47 @@ jobs:
           ${{ env.AREA }}.pmtiles
           ${{ env.AREA }}-repeat.mbtiles
           ${{ env.AREA }}-repeat.pmtiles
+
+    - name: Build tilemaker without clip cache
+      run: |
+        make clean
+        make -j4 CONFIG=-DTILEMAKER_DISABLE_CLIP_CACHE tilemaker
+
+    - name: Build semantic-verification tiles without clip cache
+      run: |
+        run_tilemaker() {
+          output="$1"
+          shift
+          echo "::group::Build ${output}"
+          if "$@"; then
+            echo "::endgroup::"
+          else
+            status="$?"
+            echo "::endgroup::"
+            echo "::error title=Tile generation failed::tilemaker failed while writing ${output} with exit code ${status}"
+            exit "${status}"
+          fi
+          if [ ! -s "${output}" ]; then
+            echo "::error title=Tile output missing::tilemaker did not create ${output}"
+            exit 1
+          fi
+        }
+
+        run_tilemaker "${{ env.AREA }}-no-clip-cache.pmtiles" ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-no-clip-cache.pmtiles" --verbose
+        run_tilemaker "${{ env.AREA }}-no-clip-cache-repeat.pmtiles" ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-no-clip-cache-repeat.pmtiles" --verbose
+        run_tilemaker "${{ env.AREA }}-no-clip-cache.mbtiles" ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-no-clip-cache.mbtiles" --verbose --store "${{ runner.temp }}/store-no-clip-cache"
+        run_tilemaker "${{ env.AREA }}-no-clip-cache-repeat.mbtiles" ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-no-clip-cache-repeat.mbtiles" --verbose --store "${{ runner.temp }}/store-no-clip-cache-repeat"
+
+    - name: Upload semantic-verification tiles
+      uses: actions/upload-artifact@v7
+      with:
+        name: tile-outputs-no-clip-cache-${{ matrix.os }}-makefile
+        retention-days: 14
+        path: |
+          ${{ env.AREA }}-no-clip-cache.mbtiles
+          ${{ env.AREA }}-no-clip-cache.pmtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.mbtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.pmtiles
 
 
   Github-Action:
