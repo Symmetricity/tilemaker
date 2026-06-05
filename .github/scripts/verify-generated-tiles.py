@@ -36,6 +36,12 @@ def error(path, message):
     status = 1
 
 
+def workflow_error(message):
+    global status
+    print(f"::error::{message}")
+    status = 1
+
+
 def notice(path, message):
     label = archive_label(path)
     print(f"::notice title={label}::{label}: {message}")
@@ -90,10 +96,15 @@ def build_label(path):
         return str(path.parent)
 
     label = artifact.removeprefix("tile-outputs-")
+    no_clip_cache = label.startswith("no-clip-cache-")
+    if no_clip_cache:
+        label = label.removeprefix("no-clip-cache-")
+
+    mode = ", no clip cache" if no_clip_cache else ""
     if label.endswith("-cmake"):
-        return f"{runner_label(label.removesuffix('-cmake'))} (CMake)"
+        return f"{runner_label(label.removesuffix('-cmake'))} (CMake{mode})"
     if label.endswith("-makefile"):
-        return f"{runner_label(label.removesuffix('-makefile'))} (Makefile)"
+        return f"{runner_label(label.removesuffix('-makefile'))} (Makefile{mode})"
     return artifact
 
 
@@ -113,6 +124,10 @@ def archive_label(path):
 
 def should_validate_archive(path):
     return path.parent.name != "tile-outputs-github-action"
+
+
+def should_semantic_compare_archive(path):
+    return path.parent.name.startswith("tile-outputs-no-clip-cache-")
 
 
 def decompress_payload(data):
@@ -846,10 +861,24 @@ def main():
         "PMTiles archive failed verification",
     )
 
-    check_repeat(mbtiles, "mbtiles", mbtiles_decode_semantic_tiles, "MBTiles archive failed verification")
-    check_repeat(pmtiles, "pmtiles", pmtiles_decode_semantic_tiles, "PMTiles archive failed verification")
-    check_cross_runner(mbtiles, "mbtiles", mbtiles_decode_semantic_tiles, "MBTiles archive failed verification")
-    check_cross_runner(pmtiles, "pmtiles", pmtiles_decode_semantic_tiles, "PMTiles archive failed verification")
+    semantic_mbtiles = {
+        path: content for path, content in mbtiles.items()
+        if should_semantic_compare_archive(path)
+    }
+    semantic_pmtiles = {
+        path: content for path, content in pmtiles.items()
+        if should_semantic_compare_archive(path)
+    }
+
+    if not semantic_mbtiles:
+        workflow_error("no no-clip-cache MBTiles artifacts found for semantic verification")
+    if not semantic_pmtiles:
+        workflow_error("no no-clip-cache PMTiles artifacts found for semantic verification")
+
+    check_repeat(semantic_mbtiles, "mbtiles", mbtiles_decode_semantic_tiles, "MBTiles archive failed verification")
+    check_repeat(semantic_pmtiles, "pmtiles", pmtiles_decode_semantic_tiles, "PMTiles archive failed verification")
+    check_cross_runner(semantic_mbtiles, "mbtiles", mbtiles_decode_semantic_tiles, "MBTiles archive failed verification")
+    check_cross_runner(semantic_pmtiles, "pmtiles", pmtiles_decode_semantic_tiles, "PMTiles archive failed verification")
     return status
 
 

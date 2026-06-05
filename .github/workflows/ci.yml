@@ -59,6 +59,9 @@ jobs:
             .github/workflows/ci.yml)
               runtime=true
               ;;
+            .github/scripts/*)
+              runtime=true
+              ;;
             CMakeLists.txt|Makefile|Dockerfile|action.yml|VERSION)
               runtime=true
               ;;
@@ -161,6 +164,33 @@ jobs:
         git ls-files -z -- '.github/scripts/*.py' |
           xargs -0 -r python3 -m py_compile
 
+    - name: Validate PowerShell CI scripts
+      run: |
+        while IFS= read -r -d '' file; do
+          SCRIPT_PATH="$file" pwsh -NoProfile -Command "\$ErrorActionPreference = 'Stop'; [scriptblock]::Create((Get-Content -Raw -LiteralPath \$env:SCRIPT_PATH)) | Out-Null"
+        done < <(git ls-files -z -- '.github/scripts/*.ps1')
+
+  cmake-configure:
+    name: CMake configure smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - changes
+      - static-validation
+    if: ${{ needs.changes.outputs.runtime == 'true' }}
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install CMake configure dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake libboost-dev libboost-filesystem-dev libboost-program-options-dev libboost-system-dev lua5.4 liblua5.4-dev libshp-dev libsqlite3-dev rapidjson-dev zlib1g-dev
+
+    - name: Configure CMake
+      run: |
+        cmake -S . -B build-check -DCMAKE_BUILD_TYPE=Release
+
   download-pbf:
     name: Download PBF fixture
     runs-on: ubuntu-latest
@@ -168,6 +198,7 @@ jobs:
     needs:
       - changes
       - static-validation
+      - cmake-configure
     if: ${{ needs.changes.outputs.runtime == 'true' }}
     outputs:
       pbf-available: ${{ steps.fixture.outputs.pbf-available }}
@@ -296,6 +327,8 @@ jobs:
       with:
         name: pbf-fixture
         retention-days: 1
+        if-no-files-found: error
+        compression-level: 0
         path: ${{ env.AREA }}.osm.pbf
 
   Windows-Build:
@@ -306,9 +339,13 @@ jobs:
     if: ${{ needs.download-pbf.outputs.pbf-available == 'true' }}
     env:
       VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-binary-cache,readwrite
+      SCCACHE_GHA_ENABLED: "true"
 
     steps:
     - uses: actions/checkout@v6
+
+    - name: Install sccache
+      uses: mozilla-actions/sccache-action@v0.0.10
 
     - name: Download PBF fixture
       uses: actions/download-artifact@v8
@@ -345,53 +382,66 @@ jobs:
     - name: Build tilemaker
       run: |
         mkdir ${{ github.workspace }}\build
-        cd ${{ github.workspace }}\build && cmake -DTILEMAKER_BUILD_STATIC=ON -DVCPKG_TARGET_TRIPLET="x64-windows-static-md" -DVCPKG_INSTALLED_DIR="${{ github.workspace }}\vcpkg_installed" -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" ..
+        cd ${{ github.workspace }}\build && cmake -DTILEMAKER_BUILD_STATIC=ON -DVCPKG_TARGET_TRIPLET="x64-windows-static-md" -DVCPKG_INSTALLED_DIR="${{ github.workspace }}\vcpkg_installed" -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" ..
         cd ${{ github.workspace }}\build && cmake --build . --config RelWithDebInfo
+
+    - name: Build tilemaker without clip cache
+      run: |
+        mkdir ${{ github.workspace }}\build-no-clip-cache
+        cd ${{ github.workspace }}\build-no-clip-cache && cmake -DTILEMAKER_BUILD_STATIC=ON -DTILEMAKER_DISABLE_CLIP_CACHE=ON -DVCPKG_TARGET_TRIPLET="x64-windows-static-md" -DVCPKG_INSTALLED_DIR="${{ github.workspace }}\vcpkg_installed" -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" ..
+        cd ${{ github.workspace }}\build-no-clip-cache && cmake --build . --config RelWithDebInfo --target tilemaker
 
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
       run: |
         $tilemaker = "${{ github.workspace }}\build\RelWithDebInfo\tilemaker.exe"
-        function Invoke-Tilemaker {
-          param([string] $Output, [string[]] $Arguments)
-          Write-Host "::group::Build $Output"
-          & $tilemaker @Arguments
-          $status = $LASTEXITCODE
-          Write-Host "::endgroup::"
-          if ($status -ne 0) {
-            Write-Error "tilemaker failed while writing $Output with exit code $status"
-            exit $status
-          }
-          if (!(Test-Path -LiteralPath $Output) -or (Get-Item -LiteralPath $Output).Length -eq 0) {
-            Write-Error "tilemaker did not create $Output"
-            exit 1
-          }
-        }
-
-        Invoke-Tilemaker "${{ env.AREA }}.pmtiles" @("${{ env.AREA }}.osm.pbf", "--config=resources/config-openmaptiles.json", "--process=resources/process-openmaptiles.lua", "--output=${{ env.AREA }}.pmtiles", "--verbose")
-        Invoke-Tilemaker "${{ env.AREA }}-repeat.pmtiles" @("${{ env.AREA }}.osm.pbf", "--config=resources/config-openmaptiles.json", "--process=resources/process-openmaptiles.lua", "--output=${{ env.AREA }}-repeat.pmtiles", "--verbose")
-        Invoke-Tilemaker "${{ env.AREA }}.mbtiles" @("${{ env.AREA }}.osm.pbf", "--config=resources/config-openmaptiles.json", "--process=resources/process-openmaptiles.lua", "--output=${{ env.AREA }}.mbtiles", "--store", "${{ runner.temp }}\osm_store", "--verbose")
-        Invoke-Tilemaker "${{ env.AREA }}-repeat.mbtiles" @("${{ env.AREA }}.osm.pbf", "--config=resources/config-openmaptiles.json", "--process=resources/process-openmaptiles.lua", "--output=${{ env.AREA }}-repeat.mbtiles", "--store", "${{ runner.temp }}\osm_store_repeat", "--verbose")
+        .\.github\scripts\generate-tiles.ps1 -Tilemaker $tilemaker -Area "${{ env.AREA }}" -OutputSuffix "" -StoreRoot "${{ runner.temp }}"
 
     - name: Upload generated tiles
       uses: actions/upload-artifact@v7
       with:
         name: tile-outputs-windows-cmake
         retention-days: 14
+        if-no-files-found: error
+        compression-level: 0
         path: |
           ${{ env.AREA }}.mbtiles
           ${{ env.AREA }}.pmtiles
           ${{ env.AREA }}-repeat.mbtiles
           ${{ env.AREA }}-repeat.pmtiles
 
+    - name: Build semantic-verification tiles without clip cache
+      run: |
+        $tilemaker = "${{ github.workspace }}\build-no-clip-cache\RelWithDebInfo\tilemaker.exe"
+        .\.github\scripts\generate-tiles.ps1 -Tilemaker $tilemaker -Area "${{ env.AREA }}" -OutputSuffix "-no-clip-cache" -StoreRoot "${{ runner.temp }}"
+
+    - name: Upload semantic-verification tiles
+      uses: actions/upload-artifact@v7
+      with:
+        name: tile-outputs-no-clip-cache-windows-cmake
+        retention-days: 14
+        if-no-files-found: error
+        compression-level: 0
+        path: |
+          ${{ env.AREA }}-no-clip-cache.mbtiles
+          ${{ env.AREA }}-no-clip-cache.pmtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.mbtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.pmtiles
+
     - name: 'Upload compiled executable'
       uses: actions/upload-artifact@v7
       with:
         name: tilemaker-windows
         retention-days: 14
+        if-no-files-found: error
         path: |
           ${{ github.workspace }}\resources
           ${{ github.workspace }}\build\RelWithDebInfo\tilemaker.exe
           ${{ github.workspace }}\build\RelWithDebInfo\*.pdb
+
+    - name: Show sccache stats
+      if: always()
+      run: |
+        sccache --show-stats
 
   unix-build:  
     strategy:  
@@ -408,6 +458,7 @@ jobs:
     if: ${{ needs.download-pbf.outputs.pbf-available == 'true' }}
     env:
       VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-binary-cache,readwrite
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
 
     steps:
     - uses: actions/checkout@v6
@@ -422,6 +473,18 @@ jobs:
       run: |
         echo "image-os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
         echo "image-version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
+    - name: Install ccache
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ccache
+
+    - name: Enable ccache
+      uses: actions/cache@v5
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-${{ matrix.triplet }}-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**') }}
+        restore-keys: ccache-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-${{ matrix.triplet }}-
 
     - name: Enable vcpkg binary cache
       uses: actions/cache@v5
@@ -442,54 +505,65 @@ jobs:
 
     - name: Build tilemaker
       run: |
+        ccache --zero-stats
         mkdir build
         cd build
-        cmake -DTILEMAKER_BUILD_STATIC=ON -DCMAKE_BUILD_TYPE=Release -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" -DVCPKG_INSTALLED_DIR="${{ github.workspace }}/vcpkg_installed" -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_CXX_COMPILER=g++ ..
+        cmake -DTILEMAKER_BUILD_STATIC=ON -DCMAKE_BUILD_TYPE=Release -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" -DVCPKG_INSTALLED_DIR="${{ github.workspace }}/vcpkg_installed" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_CXX_COMPILER=g++ ..
         cmake --build . 
         strip tilemaker
+        ccache --show-stats
+
+    - name: Build tilemaker without clip cache
+      run: |
+        mkdir build-no-clip-cache
+        cd build-no-clip-cache
+        cmake -DTILEMAKER_BUILD_STATIC=ON -DTILEMAKER_DISABLE_CLIP_CACHE=ON -DCMAKE_BUILD_TYPE=Release -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}" -DVCPKG_INSTALLED_DIR="${{ github.workspace }}/vcpkg_installed" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DCMAKE_CXX_COMPILER=g++ ..
+        cmake --build . --target tilemaker
+        strip tilemaker
+        ccache --show-stats
 
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
       run: |
-        run_tilemaker() {
-          output="$1"
-          shift
-          echo "::group::Build ${output}"
-          if "$@"; then
-            echo "::endgroup::"
-          else
-            status="$?"
-            echo "::endgroup::"
-            echo "::error title=Tile generation failed::tilemaker failed while writing ${output} with exit code ${status}"
-            exit "${status}"
-          fi
-          if [ ! -s "${output}" ]; then
-            echo "::error title=Tile output missing::tilemaker did not create ${output}"
-            exit 1
-          fi
-        }
-
         tilemaker="${{ github.workspace }}/build/${{ matrix.executable }}"
-        run_tilemaker "${{ env.AREA }}.pmtiles" "${tilemaker}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.pmtiles" --verbose
-        run_tilemaker "${{ env.AREA }}-repeat.pmtiles" "${tilemaker}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-repeat.pmtiles" --verbose
-        run_tilemaker "${{ env.AREA }}.mbtiles" "${tilemaker}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.mbtiles" --verbose --store "${{ runner.temp }}/store"
-        run_tilemaker "${{ env.AREA }}-repeat.mbtiles" "${tilemaker}" "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-repeat.mbtiles" --verbose --store "${{ runner.temp }}/store-repeat"
+        .github/scripts/generate-tiles.sh "${tilemaker}" "${{ env.AREA }}" "" "${{ runner.temp }}"
 
     - name: Upload generated tiles
       uses: actions/upload-artifact@v7
       with:
         name: tile-outputs-${{ matrix.os }}-cmake
         retention-days: 14
+        if-no-files-found: error
+        compression-level: 0
         path: |
           ${{ env.AREA }}.mbtiles
           ${{ env.AREA }}.pmtiles
           ${{ env.AREA }}-repeat.mbtiles
           ${{ env.AREA }}-repeat.pmtiles
 
+    - name: Build semantic-verification tiles without clip cache
+      run: |
+        tilemaker="${{ github.workspace }}/build-no-clip-cache/${{ matrix.executable }}"
+        .github/scripts/generate-tiles.sh "${tilemaker}" "${{ env.AREA }}" "-no-clip-cache" "${{ runner.temp }}"
+
+    - name: Upload semantic-verification tiles
+      uses: actions/upload-artifact@v7
+      with:
+        name: tile-outputs-no-clip-cache-${{ matrix.os }}-cmake
+        retention-days: 14
+        if-no-files-found: error
+        compression-level: 0
+        path: |
+          ${{ env.AREA }}-no-clip-cache.mbtiles
+          ${{ env.AREA }}-no-clip-cache.pmtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.mbtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.pmtiles
+
     - name: 'Upload compiled executable'
       uses: actions/upload-artifact@v7
       with:
         name: tilemaker-${{ matrix.os }}
         retention-days: 14
+        if-no-files-found: error
         path: |
           ${{ github.workspace }}/resources
           ${{ github.workspace }}/build/${{ matrix.executable }}
@@ -508,6 +582,8 @@ jobs:
     timeout-minutes: 30
     needs: download-pbf
     if: ${{ needs.download-pbf.outputs.pbf-available == 'true' }}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
 
     steps:
     - uses: actions/checkout@v6
@@ -520,54 +596,67 @@ jobs:
     - name: Install Linux dependencies
       if: ${{ matrix.os == 'ubuntu-22.04' }}
       run: |
-        sudo apt install build-essential libboost-dev libboost-filesystem-dev libboost-iostreams-dev libboost-program-options-dev libboost-system-dev luajit libluajit-5.1-dev liblua5.1-0-dev libshp-dev libsqlite3-dev rapidjson-dev zlib1g-dev
+        sudo apt install build-essential ccache libboost-dev libboost-filesystem-dev libboost-iostreams-dev libboost-program-options-dev libboost-system-dev luajit libluajit-5.1-dev liblua5.1-0-dev libshp-dev libsqlite3-dev rapidjson-dev zlib1g-dev
 
     - name: Install Mac OS X dependencies
       if: ${{ matrix.os == 'macos-latest' || matrix.os == 'macos-14' }}
       run: |
         c++ --version
-        brew install boost lua shapelib rapidjson
+        brew install boost ccache lua shapelib rapidjson
+
+    - name: Enable ccache
+      uses: actions/cache@v5
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-${{ runner.os }}-${{ matrix.os }}-makefile-${{ hashFiles('Makefile', 'include/**', 'src/**', 'test/**') }}
+        restore-keys: ccache-${{ runner.os }}-${{ matrix.os }}-makefile-
 
     - name: Build tilemaker
       run: |
-        make -j4
-        make test
+        ccache --zero-stats
+        make -j4 CXX="ccache c++" CC="ccache cc"
+        make test CXX="ccache c++" CC="ccache cc"
+        ccache --show-stats
 
     - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
       run: |
-        run_tilemaker() {
-          output="$1"
-          shift
-          echo "::group::Build ${output}"
-          if "$@"; then
-            echo "::endgroup::"
-          else
-            status="$?"
-            echo "::endgroup::"
-            echo "::error title=Tile generation failed::tilemaker failed while writing ${output} with exit code ${status}"
-            exit "${status}"
-          fi
-          if [ ! -s "${output}" ]; then
-            echo "::error title=Tile output missing::tilemaker did not create ${output}"
-            exit 1
-          fi
-        }
-
-        run_tilemaker "${{ env.AREA }}.pmtiles" ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.pmtiles" --verbose
-        run_tilemaker "${{ env.AREA }}-repeat.pmtiles" ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-repeat.pmtiles" --verbose
-        run_tilemaker "${{ env.AREA }}.mbtiles" ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}.mbtiles" --verbose --store "${{ runner.temp }}/store"
-        run_tilemaker "${{ env.AREA }}-repeat.mbtiles" ./tilemaker "${{ env.AREA }}.osm.pbf" --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output="${{ env.AREA }}-repeat.mbtiles" --verbose --store "${{ runner.temp }}/store-repeat"
+        .github/scripts/generate-tiles.sh ./tilemaker "${{ env.AREA }}" "" "${{ runner.temp }}"
 
     - name: Upload generated tiles
       uses: actions/upload-artifact@v7
       with:
         name: tile-outputs-${{ matrix.os }}-makefile
         retention-days: 14
+        if-no-files-found: error
+        compression-level: 0
         path: |
           ${{ env.AREA }}.mbtiles
           ${{ env.AREA }}.pmtiles
           ${{ env.AREA }}-repeat.mbtiles
           ${{ env.AREA }}-repeat.pmtiles
+
+    - name: Build tilemaker without clip cache
+      run: |
+        make clean
+        make -j4 CONFIG=-DTILEMAKER_DISABLE_CLIP_CACHE CXX="ccache c++" CC="ccache cc" tilemaker
+        ccache --show-stats
+
+    - name: Build semantic-verification tiles without clip cache
+      run: |
+        .github/scripts/generate-tiles.sh ./tilemaker "${{ env.AREA }}" "-no-clip-cache" "${{ runner.temp }}"
+
+    - name: Upload semantic-verification tiles
+      uses: actions/upload-artifact@v7
+      with:
+        name: tile-outputs-no-clip-cache-${{ matrix.os }}-makefile
+        retention-days: 14
+        if-no-files-found: error
+        compression-level: 0
+        path: |
+          ${{ env.AREA }}-no-clip-cache.mbtiles
+          ${{ env.AREA }}-no-clip-cache.pmtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.mbtiles
+          ${{ env.AREA }}-no-clip-cache-repeat.pmtiles
 
 
   Github-Action:
@@ -630,6 +719,8 @@ jobs:
       with:
         name: tile-outputs-github-action
         retention-days: 14
+        if-no-files-found: error
+        compression-level: 0
         path: |
           ${{ env.AREA }}.mbtiles
           ${{ env.AREA }}.pmtiles
@@ -681,6 +772,7 @@ jobs:
     needs:
       - changes
       - static-validation
+      - cmake-configure
     if: ${{ needs.changes.outputs.runtime == 'true' && github.ref != 'refs/heads/master' }}
     permissions:
       contents: read
@@ -762,6 +854,7 @@ jobs:
     needs:
       - changes
       - static-validation
+      - cmake-configure
     if: ${{ needs.changes.outputs.runtime == 'true' && github.ref == 'refs/heads/master' }}
     permissions:
       contents: read

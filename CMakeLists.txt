@@ -10,6 +10,7 @@ string(STRIP "${tilemaker_version}" tilemaker_version)
 project(tilemaker VERSION ${tilemaker_version})
 
 OPTION(TILEMAKER_BUILD_STATIC "Attempt to link dependencies static" OFF)
+OPTION(TILEMAKER_DISABLE_CLIP_CACHE "Disable geometry clip cache" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -177,6 +178,9 @@ file(GLOB tilemaker_src_files
 	src/way_stores.cpp
   )
 add_executable(tilemaker ${tilemaker_src_files})
+IF (TILEMAKER_DISABLE_CLIP_CACHE)
+	target_compile_definitions(tilemaker PRIVATE TILEMAKER_DISABLE_CLIP_CACHE)
+ENDIF ()
 target_include_directories(tilemaker PRIVATE include)
 target_include_directories(tilemaker PRIVATE ${CMAKE_BINARY_DIR}) # for generated files
 target_link_libraries(tilemaker
