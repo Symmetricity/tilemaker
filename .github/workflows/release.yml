@@ -1,0 +1,345 @@
+name: "Release"
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Validate version metadata
+      id: version
+      run: |
+        python3 <<'PY'
+        import json
+        import os
+        import pathlib
+        import re
+
+        version = pathlib.Path("VERSION").read_text(encoding="utf-8").strip()
+        if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+            raise SystemExit(f"VERSION must use X.Y.Z format, got {version!r}")
+
+        with open("vcpkg.json", encoding="utf-8") as handle:
+            vcpkg_version = json.load(handle).get("version-string")
+
+        if vcpkg_version != version:
+            raise SystemExit(
+                f"vcpkg.json version-string {vcpkg_version!r} does not match VERSION {version!r}"
+            )
+
+        ref_type = os.environ.get("GITHUB_REF_TYPE")
+        ref_name = os.environ.get("GITHUB_REF_NAME")
+        expected_tag = f"v{version}"
+        if ref_type == "tag" and ref_name != expected_tag:
+            raise SystemExit(f"release tag {ref_name!r} does not match VERSION tag {expected_tag!r}")
+
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            output.write(f"version={version}\n")
+        PY
+
+  windows:
+    name: Windows release package
+    runs-on: windows-latest
+    timeout-minutes: 120
+    needs: validate
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-binary-cache,readwrite
+      VCPKG_INSTALLED_DIR: ${{ github.workspace }}\vcpkg_installed
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Detect runner image
+      id: runner-image
+      shell: pwsh
+      run: |
+        $imageOS = if ($env:ImageOS) { $env:ImageOS } else { "unknown" }
+        $imageVersion = if ($env:ImageVersion) { $env:ImageVersion } else { "unknown" }
+        "image-os=$imageOS" >> $env:GITHUB_OUTPUT
+        "image-version=$imageVersion" >> $env:GITHUB_OUTPUT
+
+    - name: Enable vcpkg binary cache
+      uses: actions/cache@v5
+      with:
+        path: ${{ github.workspace }}\vcpkg-binary-cache
+        key: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-x64-windows-static-md-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+        restore-keys: vcpkg-binary-${{ runner.os }}-${{ steps.runner-image.outputs.image-os }}-${{ steps.runner-image.outputs.image-version }}-x64-windows-static-md-
+
+    - name: Checkout vcpkg manifest baseline
+      shell: pwsh
+      run: |
+        $baseline = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+        git -C $env:VCPKG_INSTALLATION_ROOT fetch --depth=1 origin $baseline
+        git -C $env:VCPKG_INSTALLATION_ROOT checkout --force $baseline
+
+    - name: Build dependencies
+      run: |
+        vcpkg install --triplet=x64-windows-static-md
+
+    - name: Build tilemaker
+      shell: pwsh
+      run: |
+        cmake -S . -B build -DTILEMAKER_BUILD_STATIC=ON -DVCPKG_TARGET_TRIPLET="x64-windows-static-md" -DVCPKG_INSTALLED_DIR="${{ github.workspace }}\vcpkg_installed" -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        cmake --build build --config RelWithDebInfo
+
+    - name: Smoke test
+      shell: pwsh
+      run: |
+        .\build\RelWithDebInfo\tilemaker.exe --help
+
+    - name: Package release
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Path dist | Out-Null
+        .\.github\scripts\package-release.ps1 `
+          -PackageName "tilemaker-windows-x64" `
+          -Tilemaker "${{ github.workspace }}\build\RelWithDebInfo\tilemaker.exe" `
+          -TilemakerServer "${{ github.workspace }}\build\RelWithDebInfo\tilemaker-server.exe" `
+          -OutputDir "${{ github.workspace }}\dist"
+
+    - name: Upload release package
+      uses: actions/upload-artifact@v7
+      with:
+        name: release-windows
+        if-no-files-found: error
+        path: dist/*.zip
+
+  linux:
+    name: Ubuntu ${{ matrix.ubuntu-version }} release package
+    runs-on: ubuntu-${{ matrix.ubuntu-version }}
+    timeout-minutes: 60
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu-version:
+          - '22.04'
+          - '24.04'
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake dpkg-dev libboost-dev libboost-filesystem-dev libboost-program-options-dev libboost-system-dev lua5.4 liblua5.4-dev libshp-dev libsqlite3-dev patchelf rapidjson-dev zip zlib1g-dev
+
+    - name: Build tilemaker
+      run: |
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        cmake --build build --parallel 4
+        strip build/tilemaker build/tilemaker-server
+
+    - name: Smoke test
+      run: |
+        ./build/tilemaker --help
+
+    - name: Package release
+      run: |
+        mkdir -p dist
+        .github/scripts/package-release.sh \
+          "tilemaker-ubuntu-${{ matrix.ubuntu-version }}" \
+          build/tilemaker \
+          build/tilemaker-server \
+          dist
+        .github/scripts/package-deb.sh \
+          "${{ needs.validate.outputs.version }}" \
+          build/tilemaker \
+          build/tilemaker-server \
+          dist
+
+    - name: Upload release package
+      uses: actions/upload-artifact@v7
+      with:
+        name: release-ubuntu-${{ matrix.ubuntu-version }}
+        if-no-files-found: error
+        path: |
+          dist/*.deb
+          dist/*.zip
+
+  linux-container:
+    name: Ubuntu 26.04 release package
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    timeout-minutes: 60
+    needs: validate
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y ca-certificates git build-essential cmake dpkg-dev libboost-dev libboost-filesystem-dev libboost-program-options-dev libboost-system-dev lua5.4 liblua5.4-dev libshp-dev libsqlite3-dev patchelf rapidjson-dev zip zlib1g-dev
+
+    - uses: actions/checkout@v6
+
+    - name: Build tilemaker
+      run: |
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        cmake --build build --parallel 4
+        strip build/tilemaker build/tilemaker-server
+
+    - name: Smoke test
+      run: |
+        ./build/tilemaker --help
+
+    - name: Package release
+      run: |
+        mkdir -p dist
+        .github/scripts/package-release.sh \
+          tilemaker-ubuntu-26.04 \
+          build/tilemaker \
+          build/tilemaker-server \
+          dist
+        .github/scripts/package-deb.sh \
+          "${{ needs.validate.outputs.version }}" \
+          build/tilemaker \
+          build/tilemaker-server \
+          dist
+
+    - name: Upload release package
+      uses: actions/upload-artifact@v7
+      with:
+        name: release-ubuntu-26.04
+        if-no-files-found: error
+        path: |
+          dist/*.deb
+          dist/*.zip
+
+  linux-smoke:
+    name: Ubuntu ${{ matrix.ubuntu-version }} release smoke
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:${{ matrix.ubuntu-version }}
+    timeout-minutes: 15
+    needs:
+      - linux
+      - linux-container
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu-version:
+          - '22.04'
+          - '24.04'
+          - '26.04'
+
+    steps:
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y ca-certificates gzip tar unzip
+
+    - name: Download release package
+      uses: actions/download-artifact@v8
+      with:
+        name: release-ubuntu-${{ matrix.ubuntu-version }}
+        path: dist
+
+    - name: Smoke test portable zip
+      run: |
+        mkdir /tmp/tilemaker-zip
+        unzip -q "dist/tilemaker-ubuntu-${{ matrix.ubuntu-version }}.zip" -d /tmp/tilemaker-zip
+        "/tmp/tilemaker-zip/tilemaker-ubuntu-${{ matrix.ubuntu-version }}/bin/tilemaker" --help >/dev/null
+        { "/tmp/tilemaker-zip/tilemaker-ubuntu-${{ matrix.ubuntu-version }}/bin/tilemaker-server" --help >/tmp/tilemaker-server-help || test "$?" -eq 1; }
+        test -s /tmp/tilemaker-server-help
+
+    - name: Smoke test Debian package
+      run: |
+        apt-get install -y ./dist/*.deb
+        tilemaker --help >/dev/null
+        { tilemaker-server --help >/tmp/tilemaker-server-help || test "$?" -eq 1; }
+        test -s /tmp/tilemaker-server-help
+
+  macos:
+    name: macOS release package
+    runs-on: macos-latest
+    timeout-minutes: 60
+    needs: validate
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install dependencies
+      run: |
+        brew install boost lua shapelib rapidjson
+
+    - name: Build tilemaker
+      run: |
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        cmake --build build --parallel 4
+        strip build/tilemaker build/tilemaker-server
+
+    - name: Smoke test
+      run: |
+        ./build/tilemaker --help
+
+    - name: Package release
+      run: |
+        mkdir -p dist
+        .github/scripts/package-release.sh \
+          tilemaker-macos-latest \
+          build/tilemaker \
+          build/tilemaker-server \
+          dist
+
+    - name: Upload release package
+      uses: actions/upload-artifact@v7
+      with:
+        name: release-macos-latest
+        if-no-files-found: error
+        path: dist/*.zip
+
+  publish:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs:
+      - windows
+      - linux
+      - linux-container
+      - linux-smoke
+      - macos
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    permissions:
+      contents: write
+
+    steps:
+    - name: Download release packages
+      uses: actions/download-artifact@v8
+      with:
+        pattern: release-*
+        path: dist
+        merge-multiple: true
+
+    - name: Generate checksums
+      run: |
+        cd dist
+        sha256sum -- *.deb *.zip > SHA256SUMS.txt
+
+    - name: Publish assets
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG_NAME: ${{ github.ref_name }}
+      run: |
+        if gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+          gh release upload "${TAG_NAME}" dist/*.deb dist/*.zip dist/SHA256SUMS.txt --clobber --repo "${GITHUB_REPOSITORY}"
+        else
+          gh release create "${TAG_NAME}" dist/*.deb dist/*.zip dist/SHA256SUMS.txt --verify-tag --title "${TAG_NAME}" --generate-notes --repo "${GITHUB_REPOSITORY}"
+        fi
