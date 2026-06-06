@@ -71,6 +71,7 @@ COPY --from=src /usr/src/app/build/tilemaker-server .
 COPY --from=src /usr/local/lib/lua/5.1/flock.so /usr/local/lib/lua/5.1/flock.so
 COPY server/static ./static
 COPY resources ./resources
+COPY licenses ./licenses
 COPY VERSION ./
 COPY process.lua ./
 COPY config.json ./
